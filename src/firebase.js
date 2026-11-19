@@ -1,22 +1,22 @@
-// Add your NEW Firebase project's web-app configuration here when ready.
-// Do not paste private service-account keys into this file.
-import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
+import { initializeApp } from "firebase/app";
+import { getAuth } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
-  apiKey: "ADD_API_KEY",
-  authDomain: "ADD_PROJECT.firebaseapp.com",
-  projectId: "ADD_PROJECT_ID",
-  storageBucket: "ADD_PROJECT.appspot.com",
-  messagingSenderId: "ADD_MESSAGING_SENDER_ID",
-  appId: "ADD_APP_ID"
+  apiKey: "AIzaSyAasfAvw4GfKda9ev0LiZ26_WHu138VVDk",
+  authDomain: "school-manager-pro-new.firebaseapp.com",
+  projectId: "school-manager-pro-new",
+  storageBucket: "school-manager-pro-new.firebasestorage.app",
+  messagingSenderId: "109334608441",
+  appId: "1:109334608441:web:e6ddcc01e1fac517112be8",
+  measurementId: "G-ELNQ06N1SM"
 };
 
-const configured = firebaseConfig.apiKey !== "ADD_API_KEY";
-export const firebaseApp = configured ? initializeApp(firebaseConfig) : null;
-export const auth = firebaseApp ? getAuth(firebaseApp) : null;
-export const db = firebaseApp ? getFirestore(firebaseApp) : null;
-export const storage = firebaseApp ? getStorage(firebaseApp) : null;
-export const isFirebaseConfigured = configured;
+const firebaseApp = initializeApp(firebaseConfig);
+
+export const firebaseAppInstance = firebaseApp;
+export const auth = getAuth(firebaseApp);
+export const db = getFirestore(firebaseApp);
+export const storage = getStorage(firebaseApp);
+export const isFirebaseConfigured = true;
