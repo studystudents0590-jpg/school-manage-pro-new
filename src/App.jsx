@@ -1,0 +1,38 @@
+import React, { useMemo, useState } from 'react';
+
+const groups = [
+ {title:'Super Admin',icon:'👑',items:[['Dashboard','📊'],['Schools Management','🏫'],['School Admins','👨‍💼'],['Roles & Permissions','🔐'],['Subscription & Plans','💳'],['System Settings','⚙️']]},
+ {title:'Academic Management',icon:'🎓',items:[['Students','👨‍🎓'],['Admission','📝'],['Teachers & Staff','👩‍🏫'],['Classes & Sections','🏷️'],['Subjects & Syllabus','📚'],['Timetable','🗓️'],['Attendance','✅'],['Examinations','📋'],['Results & Report Cards','🏆'],['Homework','📖']]},
+ {title:'Finance Management',icon:'💰',items:[['Fee Collection','💳'],['Fee Structure','🧮'],['Fee Dues','⏳'],['Student Ledger','📒'],['Fee Receipts','🧾'],['Discount & Scholarship','🎁'],['Expenses','💸'],['Financial Reports','📈']]},
+ {title:'Communication',icon:'📢',items:[['Parent Portal','👨‍👩‍👧'],['Student Portal','🎒'],['Notices','📣'],['SMS & Notifications','✉️'],['Online Messages','💬'],['Homework Updates','📘']]},
+ {title:'Other Services',icon:'🧰',items:[['Certificates','📜'],['ID Cards','🪪'],['Library','📚'],['Transport','🚌'],['Inventory','📦'],['Staff Payroll','💵'],['Backup & Security','🛡️'],['Reports & Analytics','📊']]}
+];
+
+export default function App(){
+ const [active,setActive]=useState('Dashboard');
+ const [query,setQuery]=useState('');
+ const [school,setSchool]=useState('All Schools');
+ const [schools,setSchools]=useState([{id:1,name:'Iqra Public School',code:'IPS001',city:'Gadayipur, Mauaima, Prayagraj',status:'Active'}]);
+ const [showAdd,setShowAdd]=useState(false);
+ const [form,setForm]=useState({name:'',code:'',city:''});
+ const visible=useMemo(()=>groups.map(g=>({...g,items:g.items.filter(([n])=>n.toLowerCase().includes(query.toLowerCase()))})).filter(g=>g.items.length),[query]);
+ const addSchool=e=>{e.preventDefault();if(!form.name.trim()||!form.code.trim())return;if(schools.some(s=>s.code.toLowerCase()===form.code.trim().toLowerCase())){alert('School code already exists');return;}setSchools(p=>[...p,{...form,id:Date.now(),status:'Active'}]);setForm({name:'',code:'',city:''});setShowAdd(false);};
+ return <div className="shell">
+  <aside className="sidebar"><div className="brand"><span>🏫</span><div>School Manager Pro<small>NEW • MULTI-SCHOOL</small></div></div><div className="side-caption">MAIN WORKSPACE</div>
+   <button className={'nav '+(active==='Dashboard'?'selected':'')} onClick={()=>setActive('Dashboard')}>📊 Dashboard</button>
+   {groups.map(g=><div className="side-group" key={g.title}><div className="side-caption">{g.icon} {g.title}</div>{g.items.map(([n,ic])=><button key={n} className={'nav '+(active===n?'selected':'')} onClick={()=>setActive(n)}>{ic} {n}</button>)}</div>)}
+  </aside>
+  <main className="main"><header className="top"><div><b>{active}</b><small>School Manager Pro · New Platform</small></div><select value={school} onChange={e=>setSchool(e.target.value)}><option>All Schools</option>{schools.map(s=><option key={s.id}>{s.name}</option>)}</select></header>
+   <div className="content">
+    {active==='Dashboard'?<>
+     <section className="hero"><div><span className="eyebrow">SUPER ADMIN WORKSPACE</span><h1>Welcome to School Manager Pro</h1><p>One platform to manage multiple schools, academics, finance and communication.</p><button className="primary" onClick={()=>setShowAdd(true)}>＋ Add New School</button></div><div className="hero-icon">🏫</div></section>
+     <div className="stats"><div className="stat"><small>Total Schools</small><strong>{schools.length}</strong></div><div className="stat"><small>Active Schools</small><strong>{schools.filter(s=>s.status==='Active').length}</strong></div><div className="stat"><small>Management Categories</small><strong>5</strong></div><div className="stat"><small>Modules</small><strong>{groups.reduce((n,g)=>n+g.items.length,0)}</strong></div></div>
+     <div className="section-head"><div><h2>All Management Panels</h2><p>Choose a category and open a module.</p></div><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search panels..."/></div>
+     {visible.map(g=><section className="category" key={g.title}><h3>{g.icon} {g.title}</h3><div className="tiles">{g.items.map(([n,ic])=><button className="tile" key={n} onClick={()=>setActive(n)}><span>{ic}</span><b>{n}</b><small>Open module →</small></button>)}</div></section>)}
+    </>:active==='Schools Management'?<section className="workspace"><div className="section-head"><div><h2>Schools Management</h2><p>Add and view schools in this new workspace.</p></div><button className="primary" onClick={()=>setShowAdd(true)}>＋ Add School</button></div><div className="table-wrap"><table><thead><tr><th>School</th><th>Code</th><th>Location</th><th>Status</th></tr></thead><tbody>{schools.map(s=><tr key={s.id}><td>{s.name}</td><td>{s.code}</td><td>{s.city||'—'}</td><td><span className="status">{s.status}</span></td></tr>)}</tbody></table></div></section>
+    :<section className="workspace"><button className="back" onClick={()=>setActive('Dashboard')}>← Dashboard</button><h2>{active}</h2><div className="pending"><b>MODULE FOUNDATION</b><p>This module is listed in the new platform. Its forms, database rules and workflows will be implemented in its development phase. No live feature is claimed yet.</p></div></section>}
+   </div>
+  </main>
+  {showAdd&&<div className="overlay"><form className="modal" onSubmit={addSchool}><h2>Add New School</h2><label>School Name<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>School Code<input required value={form.code} onChange={e=>setForm({...form,code:e.target.value.toUpperCase()})}/></label><label>City / Address<input value={form.city} onChange={e=>setForm({...form,city:e.target.value})}/></label><div className="actions"><button type="button" className="secondary" onClick={()=>setShowAdd(false)}>Cancel</button><button className="primary">Save School</button></div></form></div>}
+ </div>
+}
