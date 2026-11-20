@@ -1,10 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   onAuthStateChanged, signInWithEmailAndPassword, signOut,
   createUserWithEmailAndPassword
 } from 'firebase/auth';
 import {
-  addDoc, collection, deleteDoc, doc, getDoc, onSnapshot,
+  addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc,
   query, updateDoc, where, serverTimestamp
 } from 'firebase/firestore';
 import { auth, db } from './firebase';
@@ -35,13 +35,25 @@ export default function App(){
  const [studentSearch,setStudentSearch]=useState(''),[studentClassFilter,setStudentClassFilter]=useState('All Classes');
  const [showStudentForm,setShowStudentForm]=useState(false),[studentForm,setStudentForm]=useState(blankStudent),[editingStudent,setEditingStudent]=useState(null),[viewStudent,setViewStudent]=useState(null),[savingStudent,setSavingStudent]=useState(false);
  const [schoolForm,setSchoolForm]=useState({name:'',code:'',city:''}),[showAddSchool,setShowAddSchool]=useState(false);
+ const registrationInProgress=useRef(false);
+ const [schoolAction,setSchoolAction]=useState(null),[typedSchoolName,setTypedSchoolName]=useState(''),[schoolActionBusy,setSchoolActionBusy]=useState(false);
 
  useEffect(()=>onAuthStateChanged(auth,async current=>{
+  if(registrationInProgress.current){setChecking(false);return;}
   if(!current){setUser(null);setProfile(null);setChecking(false);return;}
   try{
-   const snap=await getDoc(doc(db,'users',current.uid));
-   if(!snap.exists()) throw new Error('User profile not found.');
-   const p=snap.data();
+   let snap=await getDoc(doc(db,'users',current.uid));
+   let p=snap.exists()?snap.data():null;
+   // Recover registrations where Auth and the school record were created but the user profile write was interrupted.
+   if(!p){
+    const owned=await getDocs(query(collection(db,'schools'),where('ownerUid','==',current.uid)));
+    if(owned.size===1){
+     const schoolDoc=owned.docs[0], sd=schoolDoc.data();
+     p={role:'schooladmin',schoolId:schoolDoc.id,schoolName:sd.name||'',email:current.email||'',displayName:sd.adminName||'',createdAt:serverTimestamp()};
+     await setDoc(doc(db,'users',current.uid),p);
+    }
+   }
+   if(!p) throw new Error('User profile not found. Contact Super Admin for account recovery.');
    if(!['superadmin','schooladmin'].includes(p.role)) throw new Error('This account has no permitted role.');
    setUser(current);setProfile(p);setAuthError('');
   }catch(e){setUser(null);setProfile(null);setAuthError(e.message||'Account verification failed.');await signOut(auth);}
@@ -57,6 +69,13 @@ export default function App(){
  },[user,profile]);
 
  useEffect(()=>{
+  if(!user||profile?.role!=='schooladmin'||!profile?.schoolId)return;
+  return onSnapshot(doc(db,'schools',profile.schoolId),snap=>{
+   if(snap.exists()){const s={id:snap.id,...snap.data()};setSchools(prev=>[...prev.filter(x=>x.id!==s.id),s]);}
+  },e=>setAuthError('School status check failed: '+e.message));
+ },[user,profile]);
+
+ useEffect(()=>{
   if(!user||!profile)return;
   setStudentsLoading(true);setStudentError('');
   const ref=collection(db,'students');
@@ -68,19 +87,23 @@ export default function App(){
 
  const handleLogin=async e=>{e.preventDefault();setAuthError('');setLoginLoading(true);try{await signInWithEmailAndPassword(auth,email.trim(),password);}catch(e){setAuthError(friendly(e));}finally{setLoginLoading(false);}};
  const handleRegister=async e=>{
-  e.preventDefault();setAuthError('');setLoginLoading(true);
+  e.preventDefault();setAuthError('');setLoginLoading(true);registrationInProgress.current=true;
   let created=null;
   try{
    if(reg.password.length<6)throw new Error('Password must contain at least 6 characters.');
-   const cred=await createUserWithEmailAndPassword(auth,reg.email.trim(),reg.password);created=cred.user;
+   const cleanEmail=reg.email.trim().toLowerCase();
+   const cred=await createUserWithEmailAndPassword(auth,cleanEmail,reg.password);created=cred.user;
    const schoolRef=await addDoc(collection(db,'schools'),{name:reg.schoolName.trim(),code:reg.schoolCode.trim().toUpperCase(),city:reg.address.trim(),phone:reg.phone.trim(),adminName:reg.adminName.trim(),ownerUid:cred.user.uid,status:'Pending',createdAt:serverTimestamp()});
-   await (await import('firebase/firestore')).setDoc(doc(db,'users',cred.user.uid),{role:'schooladmin',schoolId:schoolRef.id,schoolName:reg.schoolName.trim(),email:reg.email.trim(),displayName:reg.adminName.trim(),createdAt:serverTimestamp()});
-   setAuthError('Registration submitted. Please wait for Super Admin approval.');
+   const profileData={role:'schooladmin',schoolId:schoolRef.id,schoolName:reg.schoolName.trim(),email:cleanEmail,displayName:reg.adminName.trim(),createdAt:serverTimestamp()};
+   await setDoc(doc(db,'users',cred.user.uid),profileData);
+   await signOut(auth);
+   setEmail(cleanEmail);setPassword('');setReg({schoolName:'',schoolCode:'',address:'',adminName:'',email:'',phone:'',password:''});
    setShowRegister(false);
+   setAuthError('Registration submitted successfully. Please wait for Super Admin approval. You can log in after approval.');
   }catch(e){
-   setAuthError(friendly(e));
+   setAuthError(e?.code==='auth/email-already-in-use'?'This email already has an account. Use Login; the app will try to recover its school profile.':friendly(e));
    if(created){try{await signOut(auth);}catch(_){}}
-  }finally{setLoginLoading(false);}
+  }finally{registrationInProgress.current=false;setChecking(false);setLoginLoading(false);}
  };
  const logout=async()=>{await signOut(auth);setUser(null);setProfile(null);setPassword('');setActive('Dashboard');};
  const isSuper=profile?.role==='superadmin';
@@ -104,9 +127,29 @@ export default function App(){
   catch(e){setStudentError('Save failed: '+friendly(e));}finally{setSavingStudent(false);}
  };
  const removeStudent=async s=>{if(!window.confirm(`Delete ${s.name}'s record?`))return;try{await deleteDoc(doc(db,'students',s.id));}catch(e){setStudentError('Delete failed: '+friendly(e));}};
- const approveSchool=async s=>{try{await updateDoc(doc(db,'schools',s.id),{status:'Active',approvedAt:serverTimestamp()});}catch(e){setAuthError(friendly(e));}};
- const blockSchool=async s=>{try{await updateDoc(doc(db,'schools',s.id),{status:'Blocked'});}catch(e){setAuthError(friendly(e));}};
- const removeSchool=async s=>{if(!window.confirm(`Permanently delete ${s.name}? This does not delete its students or Firebase login.`))return;try{await deleteDoc(doc(db,'schools',s.id));}catch(e){setAuthError(friendly(e));}};
+ const approveSchool=async s=>{try{await updateDoc(doc(db,'schools',s.id),{status:'Active',approvedAt:serverTimestamp(),updatedAt:serverTimestamp()});}catch(e){setAuthError(friendly(e));}};
+ const holdSchool=async s=>{setSchoolAction({school:s,action:'hold'});setTypedSchoolName('');};
+ const restoreSchool=async s=>{setSchoolAction({school:s,action:'restore'});setTypedSchoolName('');};
+ const archiveSchool=async s=>{setSchoolAction({school:s,action:'archive'});setTypedSchoolName('');};
+ const confirmSchoolAction=async e=>{
+  e.preventDefault();if(!schoolAction)return;
+  const {school:s,action}=schoolAction;
+  if(typedSchoolName.trim()!==s.name){alert('School name does not match. No changes made.');return;}
+  setSchoolActionBusy(true);
+  try{
+   if(s.legacy){
+    if(action==='hold'||action==='restore'||action==='archive'){
+     const ref=await addDoc(collection(db,'schools'),{name:s.name,code:s.code,city:s.city||'',status:action==='hold'?'On Hold':action==='archive'?'Archived':'Active',createdAt:serverTimestamp(),updatedAt:serverTimestamp(),migratedFromLegacy:true});
+     setSchools(prev=>prev.map(x=>x.id===s.id?{...x,convertedTo:ref.id}:x));
+    }
+   }else{
+    const status=action==='hold'?'On Hold':action==='archive'?'Archived':'Active';
+    await updateDoc(doc(db,'schools',s.id),{status,updatedAt:serverTimestamp(),...(action==='archive'?{archivedAt:serverTimestamp()}:{}),...(action==='restore'?{restoredAt:serverTimestamp()}:{})});
+   }
+   setSchoolAction(null);setTypedSchoolName('');
+  }catch(err){setAuthError(friendly(err));}
+  finally{setSchoolActionBusy(false);}
+ };
  const shareStudent=(s,kind)=>{
   const msg=`Student Details\nName: ${s.name||''}\nAdmission No: ${s.admissionNo||''}\nPEN Number: ${s.penNumber||'—'}\nFather: ${s.fatherName||''}\nClass: ${s.className||''} ${s.section||''}\nSchool: ${s.schoolName||''}\nPhone: ${s.phone||''}`;
   const phone=(s.whatsapp||s.phone||'').replace(/\D/g,'');
@@ -139,14 +182,15 @@ export default function App(){
    <div className="side-caption">MAIN WORKSPACE</div><button className={'nav '+(active==='Dashboard'?'selected':'')} onClick={()=>setActive('Dashboard')}>📊 Dashboard</button>
    {groups.filter(g=>isSuper||g.title!=='Super Admin').map(g=><div className="side-group" key={g.title}><div className="side-caption">{g.icon} {g.title}</div>{g.items.filter(([n])=>isSuper||!['Schools Management','School Admins','Roles & Permissions','Subscription & Plans','System Settings'].includes(n)).map(([n,ic])=><button key={n} className={'nav '+(active===n?'selected':'')} onClick={()=>setActive(n)}>{ic} {n}</button>)}</div>)}
   </aside>
-  <main className="main"><header className="top"><div><b>{active}</b><small>{isSuper?'Super Admin':profile?.schoolName||'School Admin'} · School Manager Pro</small></div><div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>{isSuper&&<select value={school} onChange={e=>setSchool(e.target.value)}><option>All Schools</option>{schools.filter(s=>!s.legacy).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>}<button className="secondary" onClick={logout}>Logout</button></div></header>
+  <main className="main"><header className="top"><div><b>{active}</b><small>{isSuper?'Super Admin':profile?.schoolName||'School Admin'} · School Manager Pro</small></div><div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>{isSuper&&<select value={school} onChange={e=>setSchool(e.target.value)}><option>All Schools</option>{schools.filter(s=>!s.legacy&&!['On Hold','Archived','Deleted'].includes(s.status)).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>}<button className="secondary" onClick={logout}>Logout</button></div></header>
    <div className="content">
     {active==='Dashboard'?<><section className="hero"><div><span className="eyebrow">{isSuper?'SUPER ADMIN WORKSPACE':'SCHOOL ADMIN WORKSPACE'}</span><h1>Welcome to School Manager Pro</h1><p>{isSuper?'Manage registered schools and platform activity.':'Manage your school from your mobile or computer.'}</p>{isSuper&&<button className="primary" onClick={()=>setActive('Schools Management')}>View School Registrations</button>}</div><div className="hero-icon">🏫</div></section><div className="stats"><div className="stat"><small>{isSuper?'Total Schools':'Your School'}</small><strong>{isSuper?schools.length:profile?.schoolName||'—'}</strong></div><div className="stat"><small>{isSuper?'Pending Approvals':'Total Students'}</small><strong>{isSuper?schools.filter(s=>!s.legacy&&s.status==='Pending').length:students.length}</strong></div><div className="stat"><small>Management Categories</small><strong>5</strong></div><div className="stat"><small>Modules</small><strong>{groups.reduce((n,g)=>n+g.items.length,0)}</strong></div></div><div className="section-head"><div><h2>Management Panels</h2><p>Choose a category and open a module.</p></div><input value={queryText} onChange={e=>setQueryText(e.target.value)} placeholder="Search panels..."/></div>{visible.filter(g=>isSuper||g.title!=='Super Admin').map(g=><section className="category" key={g.title}><h3>{g.icon} {g.title}</h3><div className="tiles">{g.items.filter(([n])=>isSuper||!['Schools Management','School Admins','Roles & Permissions','Subscription & Plans','System Settings'].includes(n)).map(([n,ic])=><button className="tile" key={n} onClick={()=>setActive(n)}><span>{ic}</span><b>{n}</b><small>Open module →</small></button>)}</div></section>)}</>:null}
-    {active==='Schools Management'&&isSuper?<section className="workspace"><div className="section-head"><div><h2>Schools Management</h2><p>Review registrations and control school access.</p></div><button style={primary} onClick={()=>setShowAddSchool(true)}>＋ Add School</button></div><div className="table-wrap"><table><thead><tr><th>School</th><th>Code</th><th>Admin</th><th>Address</th><th>Status</th><th>Actions</th></tr></thead><tbody>{schools.map(s=><tr key={s.id}><td>{s.name}</td><td>{s.code}</td><td>{s.adminName||'—'}</td><td>{s.city||'—'}</td><td>{s.status}</td><td>{s.legacy?'Legacy record':<div style={{display:'flex',gap:5,flexWrap:'wrap'}}>{s.status!=='Active'&&<button style={primary} onClick={()=>approveSchool(s)}>Approve</button>}{s.status==='Active'?<button style={secondary} onClick={()=>blockSchool(s)}>Block</button>:null}{s.status==='Blocked'&&<button style={secondary} onClick={()=>approveSchool(s)}>Unblock</button>}<button style={danger} onClick={()=>removeSchool(s)}>Delete</button></div>}</td></tr>)}</tbody></table></div></section>:null}
+    {active==='Schools Management'&&isSuper?<section className="workspace"><div className="section-head"><div><h2>Schools Management</h2><p>Review registrations and control school access.</p></div><button style={primary} onClick={()=>setShowAddSchool(true)}>＋ Add School</button></div><div className="table-wrap"><table><thead><tr><th>School</th><th>Code</th><th>Admin</th><th>Address</th><th>Status</th><th>Actions</th></tr></thead><tbody>{schools.filter(s=>!s.convertedTo).map(s=><tr key={s.id}><td>{s.name}</td><td>{s.code}</td><td>{s.adminName||'—'}</td><td>{s.city||'—'}</td><td><b>{s.status}</b>{s.legacy?' · Demo (not online yet)':''}</td><td><div style={{display:'flex',gap:5,flexWrap:'wrap'}}>{s.legacy?<button style={primary} onClick={()=>setSchoolAction({school:s,action:'restore'})}>Add to Online Schools</button>:null}{!s.legacy&&s.status==='Pending'&&<button style={primary} onClick={()=>approveSchool(s)}>Approve</button>}{!s.legacy&&s.status==='Active'&&<button style={secondary} onClick={()=>holdSchool(s)}>Put On Hold</button>}{!s.legacy&&s.status==='On Hold'&&<button style={primary} onClick={()=>restoreSchool(s)}>Restore Active</button>}{!s.legacy&&s.status!=='Archived'&&<button style={danger} onClick={()=>archiveSchool(s)}>Archive</button>}{!s.legacy&&s.status==='Archived'&&<button style={primary} onClick={()=>restoreSchool(s)}>Restore</button>}</div></td></tr>)}</tbody></table></div></section>:null}
     {active==='Students'&&<section className="workspace"><div className="section-head"><div><h2>Students Management</h2><p>Student records are saved in Firebase Firestore.</p></div><button style={primary} onClick={openNewStudent}>＋ Add Student</button></div>{studentError&&<p style={{color:'#b91c1c',background:'#fee2e2',padding:10,borderRadius:8}}>{studentError}</p>}<div style={{display:'flex',gap:10,flexWrap:'wrap',margin:'15px 0'}}><input style={{...inputStyle,flex:'1 1 220px'}} value={studentSearch} onChange={e=>setStudentSearch(e.target.value)} placeholder="Search name, admission no, PEN, father, phone..."/><select style={{...inputStyle,flex:'0 1 180px'}} value={studentClassFilter} onChange={e=>setStudentClassFilter(e.target.value)}><option>All Classes</option>{classes.map(c=><option key={c}>{c}</option>)}</select></div><div style={{fontSize:13,color:'#64748b',marginBottom:10}}>Total students: <b>{filteredStudents.length}</b> {studentsLoading?' · Loading...':''}</div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Admission No.</th><th>PEN Number</th><th>Class</th><th>Father</th><th>Phone</th><th>Actions</th></tr></thead><tbody>{filteredStudents.map(s=><tr key={s.id}><td>{s.name}</td><td>{s.admissionNo||'—'}</td><td>{s.penNumber||'—'}</td><td>{s.className} {s.section}</td><td>{s.fatherName||'—'}</td><td>{s.phone||'—'}</td><td><div style={{display:'flex',gap:5,flexWrap:'wrap'}}><button style={secondary} onClick={()=>setViewStudent(s)}>View</button><button style={secondary} onClick={()=>openEditStudent(s)}>Edit</button><button style={danger} onClick={()=>removeStudent(s)}>Delete</button><button style={secondary} onClick={()=>shareStudent(s,'whatsapp')}>WhatsApp</button><button style={secondary} onClick={()=>shareStudent(s,'sms')}>SMS</button><button style={secondary} onClick={()=>shareStudent(s,'pdf')}>PDF / Print</button></div></td></tr>)}{!studentsLoading&&!filteredStudents.length&&<tr><td colSpan="7" style={{textAlign:'center',padding:25}}>No student records found.</td></tr>}</tbody></table></div></section>}
     {active!=='Dashboard'&&active!=='Students'&&!(active==='Schools Management'&&isSuper)&&<section className="workspace"><button className="back" onClick={()=>setActive('Dashboard')}>← Dashboard</button><h2>{active}</h2><div className="pending"><b>MODULE FOUNDATION</b><p>This module is listed and will be connected in its development phase. Students and school registration are the current live modules.</p></div></section>}
    </div>
   </main>
+  {schoolAction&&<div className="overlay"><form className="modal" onSubmit={confirmSchoolAction}><h2>{schoolAction.action==='hold'?'Put School On Hold':schoolAction.action==='archive'?'Archive School':'Add / Restore School'}</h2><p>To prevent accidental changes, type the exact school name to confirm:</p><p><b>{schoolAction.school.name}</b></p><input autoFocus required style={inputStyle} value={typedSchoolName} onChange={e=>setTypedSchoolName(e.target.value)} placeholder="Type school name exactly"/><p style={{fontSize:12,color:'#64748b'}}>This action is saved online in Firebase. Archive does not permanently erase school or student records. Permanent deletion is intentionally not enabled in this update; it must include backup and deletion of related records.</p><div className="actions"><button type="button" className="secondary" onClick={()=>setSchoolAction(null)}>Cancel</button><button className="primary" disabled={schoolActionBusy||typedSchoolName.trim()!==schoolAction.school.name}>{schoolActionBusy?'Saving...':'Confirm'}</button></div></form></div>}
   {showAddSchool&&<div className="overlay"><form className="modal" onSubmit={addSchool}><h2>Add New School</h2><label>School Name<input required value={schoolForm.name} onChange={e=>setSchoolForm({...schoolForm,name:e.target.value})}/></label><label>School Code<input required value={schoolForm.code} onChange={e=>setSchoolForm({...schoolForm,code:e.target.value.toUpperCase()})}/></label><label>City / Address<input value={schoolForm.city} onChange={e=>setSchoolForm({...schoolForm,city:e.target.value})}/></label><div className="actions"><button type="button" className="secondary" onClick={()=>setShowAddSchool(false)}>Cancel</button><button className="primary">Save School</button></div></form></div>}
   {showStudentForm&&<div className="overlay"><form className="modal" style={{maxWidth:700,maxHeight:'90vh',overflowY:'auto'}} onSubmit={saveStudent}><h2>{editingStudent?'Edit Student':'Add New Student'}</h2><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(210px,1fr))',gap:12}}>{[['name','Student Name',true],['admissionNo','Admission Number',false],['penNumber','PEN Number',false],['fatherName','Father Name',false],['motherName','Mother Name',false],['className','Class',true],['section','Section',false],['dob','Date of Birth',false],['gender','Gender',false],['phone','Mobile Number',false],['whatsapp','WhatsApp Number',false],['email','Email',false],['address','Address',false]].map(([key,label,required])=><label key={key} style={labelStyle}>{label}{key==='className'?<select required style={inputStyle} value={studentForm[key]} onChange={e=>setStudentForm({...studentForm,[key]:e.target.value})}><option value="">Select Class</option>{CLASS_LIST.map(c=><option key={c}>{c}</option>)}</select>:key==='gender'?<select style={inputStyle} value={studentForm[key]} onChange={e=>setStudentForm({...studentForm,[key]:e.target.value})}><option value="">Select</option><option>Male</option><option>Female</option><option>Other</option></select>:key==='dob'?<input type="date" style={inputStyle} value={studentForm[key]||''} onChange={e=>setStudentForm({...studentForm,[key]:e.target.value})}/>:key==='address'?<textarea style={inputStyle} rows="2" value={studentForm[key]} onChange={e=>setStudentForm({...studentForm,[key]:e.target.value})}/>:<input required={required} type={key==='email'?'email':'text'} style={inputStyle} value={studentForm[key]||''} onChange={e=>setStudentForm({...studentForm,[key]:e.target.value})}/>}</label>)}</div><p style={{fontSize:12,color:'#64748b'}}>School: {isSuper?(school==='All Schools'?'Select a school from the top list':schools.find(s=>s.id===school)?.name):profile?.schoolName}</p><div className="actions"><button type="button" className="secondary" onClick={()=>setShowStudentForm(false)}>Cancel</button><button className="primary" disabled={savingStudent}>{savingStudent?'Saving...':'Save Student'}</button></div></form></div>}
   {viewStudent&&<div className="overlay"><div className="modal" style={{maxWidth:560}}><h2>Student Details</h2>{Object.entries({Name:viewStudent.name,'Admission No.':viewStudent.admissionNo,'PEN Number':viewStudent.penNumber,'Father Name':viewStudent.fatherName,'Mother Name':viewStudent.motherName,Class:`${viewStudent.className||''} ${viewStudent.section||''}`,'Date of Birth':viewStudent.dob,Gender:viewStudent.gender,Phone:viewStudent.phone,WhatsApp:viewStudent.whatsapp,Email:viewStudent.email,Address:viewStudent.address,School:viewStudent.schoolName}).map(([k,v])=><p key={k} style={{borderBottom:'1px solid #e2e8f0',padding:'7px 0',margin:0}}><b>{k}:</b> {v||'—'}</p>)}<div className="actions"><button style={secondary} onClick={()=>shareStudent(viewStudent,'whatsapp')}>WhatsApp</button><button style={secondary} onClick={()=>shareStudent(viewStudent,'pdf')}>PDF / Print</button><button style={primary} onClick={()=>setViewStudent(null)}>Close</button></div></div></div>}
