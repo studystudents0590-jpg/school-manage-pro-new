@@ -308,7 +308,23 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
  };
  const ledgerYears=[...new Set([year,...activePayments.map(p=>p.academicYear).filter(Boolean),...structures.map(x=>x.academicYear).filter(Boolean)])].sort((a,b)=>String(b).localeCompare(String(a)));
  const ledgerStudent=students.find(s=>s.id===ledgerStudentId);
- const ledgerCandidates=activeStudents.filter(st=>(ledgerClass==='All Classes'||String(st.className||'')===ledgerClass)&&`${st.name||''} ${st.admissionNo||''} ${st.rollNo||''} ${st.rollNumber||''} ${st.fatherName||''} ${st.phone||''} ${st.whatsapp||''} ${st.penNumber||''} ${st.aadhaarLast4||String(st.aadhaar||'').slice(-4)}`.toLowerCase().includes(ledgerSearch.toLowerCase().trim()));
+ const normalizeLedgerText=value=>String(value??'').toLowerCase().trim().replace(/\s+/g,' ');
+ const normalizeLedgerDigits=value=>String(value??'').replace(/\D/g,'');
+ const ledgerMatchesStudent=(st,rawQuery)=>{
+  const q=normalizeLedgerText(rawQuery);if(!q)return false;
+  const textFields=[st.name,st.studentName,st.admissionNo,st.admissionNumber,st.rollNo,st.rollNumber,st.fatherName,st.motherName,st.guardianName,st.phone,st.mobile,st.mobileNumber,st.whatsapp,st.whatsappNumber,st.fatherMobile,st.motherMobile,st.penNumber,st.pen,st.section];
+  if(textFields.some(value=>normalizeLedgerText(value).includes(q)))return true;
+  const qDigits=normalizeLedgerDigits(q);
+  if(qDigits){
+   const digitFields=[st.phone,st.mobile,st.mobileNumber,st.whatsapp,st.whatsappNumber,st.fatherMobile,st.motherMobile,st.penNumber,st.pen,st.rollNo,st.rollNumber,st.admissionNo,st.admissionNumber,st.aadhaarLast4,st.aadharLast4];
+   if(digitFields.some(value=>normalizeLedgerDigits(value).includes(qDigits)))return true;
+   // Aadhaar is searched only by its last four digits; never expose or match the full number in the UI.
+   const aadhaarValues=[st.aadhaar,st.aadhar,st.aadhaarNo,st.aadharNo,st.aadhaarNumber,st.aadharNumber];
+   if(qDigits.length<=4&&aadhaarValues.some(value=>normalizeLedgerDigits(value).slice(-4).includes(qDigits)))return true;
+  }
+  return false;
+ };
+ const ledgerCandidates=activeStudents.filter(st=>(ledgerClass==='All Classes'||String(st.className||'')===ledgerClass)&&ledgerMatchesStudent(st,ledgerSearch));
  const ledgerPayments=ledgerStudent?activePayments.filter(p=>p.studentId===ledgerStudent.id&&p.academicYear===year).sort((a,b)=>String(b.paymentDate||'').localeCompare(String(a.paymentDate||''))):[];
  const ledgerAllPayments=ledgerStudent?activePayments.filter(p=>p.studentId===ledgerStudent.id).sort((a,b)=>String(b.paymentDate||'').localeCompare(String(a.paymentDate||''))):[];
  const ledgerDue=ledgerStudent?feeDueDetails(ledgerStudent,year):null;
@@ -437,7 +453,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
    <div style={formGrid}>
     <label style={labelStyle}>Academic Year<select style={inputStyle} value={year} onChange={e=>{setYear(e.target.value);setLedgerStudentId('');}}>{ledgerYears.map(y=><option key={y}>{y}</option>)}</select></label>
     <label style={labelStyle}>Class<select style={inputStyle} value={ledgerClass} onChange={e=>{setLedgerClass(e.target.value);setLedgerStudentId('');}}><option>All Classes</option>{collectionClasses.map(c=><option key={c}>{c}</option>)}</select></label>
-    <label style={labelStyle}>Search Student<input style={inputStyle} value={ledgerSearch} onChange={e=>{setLedgerSearch(e.target.value);setLedgerStudentId('');}} placeholder="Name / Admission No. / Roll No. / Father / Mobile / PEN / Aadhaar last 4"/></label>
+    <label style={labelStyle}>Search Student<input style={inputStyle} value={ledgerSearch} onChange={e=>{const value=e.target.value;setLedgerSearch(value);const matches=value.trim()?activeStudents.filter(st=>(ledgerClass==='All Classes'||String(st.className||'')===ledgerClass)&&ledgerMatchesStudent(st,value)):[];setLedgerStudentId(matches.length===1?matches[0].id:'');}} placeholder="Name / Admission / Roll / Father / Mother / Mobile / WhatsApp / PEN / Aadhaar last 4"/><small className="muted">{ledgerSearch.trim()?`${ledgerCandidates.length} matching student(s). ${ledgerCandidates.length===1?'Student automatically selected.':'Select the correct student from the list.'}`:'Search by student name, admission/roll number, parent name, mobile, WhatsApp, PEN or Aadhaar last 4 digits.'}</small></label>
     <label style={labelStyle}>Select Student<select style={inputStyle} value={ledgerStudentId} onChange={e=>setLedgerStudentId(e.target.value)}><option value="">Select Student</option>{ledgerCandidates.map(st=><option key={st.id} value={st.id}>{st.name} · {st.className} · Adm: {st.admissionNo||'—'} · Father: {st.fatherName||'—'}</option>)}</select></label>
    </div>
    {ledgerStudent&&<div className="finance-card" style={{display:'grid',gap:10}}>
