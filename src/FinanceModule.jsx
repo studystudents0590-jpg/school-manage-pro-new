@@ -217,6 +217,49 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
    setMessage(`Payment saved successfully. One combined receipt: ${receiptNo}`);
   }catch(e){setError(e.message);}
  };
+ const paymentActor=profile?.displayName||profile?.email||'School Admin';
+ const correctPayment=async p=>{
+  if(!p?.id)return setError('Payment record ID not found.');
+  const nextAmount=window.prompt(`Correct amount for ${p.receiptNo||'payment'} (current ₹${Number(p.amount||0)}):`,String(p.amount||0));
+  if(nextAmount===null)return;
+  const amountValue=Number(nextAmount);
+  if(!(amountValue>0))return setError('Enter a valid amount greater than zero.');
+  const nextMonths=window.prompt('Correct month(s), comma separated. Leave blank if not applicable:',p.months||'');
+  if(nextMonths===null)return;
+  const reason=window.prompt('Reason for correction (required):','Wrong amount / month entered');
+  if(!reason?.trim())return setError('Correction reason is required.');
+  if(!window.confirm(`Confirm correction?\nOld amount: ₹${Number(p.amount||0)}\nNew amount: ₹${amountValue}\nThis will be saved in audit history.`))return;
+  try{
+   await addDoc(collection(db,'feePaymentAudit'),{schoolId,action:'EDIT',paymentId:p.id,receiptNo:p.receiptNo||'',studentId:p.studentId||'',studentName:p.studentName||'',before:{amount:Number(p.amount||0),months:p.months||'',feeType:p.feeType||'',paymentDate:p.paymentDate||'',paymentMode:p.paymentMode||''},after:{amount:amountValue,months:nextMonths.trim(),feeType:p.feeType||'',paymentDate:p.paymentDate||'',paymentMode:p.paymentMode||''},reason:reason.trim(),changedBy:paymentActor,changedAt:serverTimestamp()});
+   await updateDoc(doc(db,'feePayments',p.id),{amount:amountValue,months:nextMonths.trim(),corrected:true,correctedAt:serverTimestamp(),correctedBy:paymentActor,correctionReason:reason.trim()});
+   setMessage('Payment corrected. Original values are saved in audit history.');
+  }catch(e){setError(`Correction failed: ${e.message}`);}
+ };
+ const cancelPayment=async p=>{
+  if(!p?.id)return setError('Payment record ID not found.');
+  const reason=window.prompt('Cancellation reason (required):','Wrong payment entry');
+  if(!reason?.trim())return setError('Cancellation reason is required.');
+  if(!window.confirm(`Cancel payment ${p.receiptNo||''} of ₹${Number(p.amount||0)}? It will no longer count as paid.`))return;
+  try{
+   await addDoc(collection(db,'feePaymentAudit'),{schoolId,action:'CANCEL',paymentId:p.id,receiptNo:p.receiptNo||'',studentId:p.studentId||'',studentName:p.studentName||'',before:{amount:Number(p.amount||0),months:p.months||'',status:p.status||'paid'},reason:reason.trim(),changedBy:paymentActor,changedAt:serverTimestamp()});
+   await updateDoc(doc(db,'feePayments',p.id),{status:'cancelled',cancelledAt:serverTimestamp(),cancelledBy:paymentActor,cancellationReason:reason.trim()});
+   setMessage('Payment cancelled. It will be excluded from paid totals.');
+  }catch(e){setError(`Cancellation failed: ${e.message}`);}
+ };
+ const addRefund=async p=>{
+  const refundText=window.prompt(`Refund amount (max ₹${Number(p.amount||0)}):`,'');
+  if(refundText===null)return;
+  const refundAmount=Number(refundText);
+  if(!(refundAmount>0)||refundAmount>Number(p.amount||0))return setError('Enter a valid refund amount not exceeding the payment amount.');
+  const reason=window.prompt('Refund reason (required):','Fee refunded to parent');
+  if(!reason?.trim())return setError('Refund reason is required.');
+  if(!window.confirm(`Record refund of ₹${refundAmount}? This will reduce net paid amount.`))return;
+  try{
+   await addDoc(collection(db,'feePaymentAudit'),{schoolId,action:'REFUND',paymentId:p.id,receiptNo:p.receiptNo||'',studentId:p.studentId||'',studentName:p.studentName||'',refundAmount,reason:reason.trim(),changedBy:paymentActor,changedAt:serverTimestamp()});
+   await addDoc(collection(db,'feePayments'),{schoolId,studentId:p.studentId,studentName:p.studentName||'',admissionNo:p.admissionNo||'',className:p.className||'',paymentDate:new Date().toISOString().slice(0,10),academicYear:p.academicYear||year,paymentMode:'Refund',feeType:`Refund - ${p.feeType||'Fee'}`,amount:-refundAmount,months:p.months||'',receiptNo:`RF-${Date.now()}`,status:'paid',refundForPaymentId:p.id,notes:reason.trim(),createdBy:paymentActor,createdAt:serverTimestamp()});
+   setMessage('Refund entry saved. Net paid total has been reduced.');
+  }catch(e){setError(`Refund failed: ${e.message}`);}
+ };
  const classOrder=['Nursery','LKG','UKG',...Array.from({length:10},(_,i)=>String(i+1))];
  const nextClassOf=c=>{const i=classOrder.indexOf(String(c||'').trim());return i>=0&&i<classOrder.length-1?classOrder[i+1]:i===classOrder.length-1?'Passed Out':c;};
  const currentSessionStart=Number(String(year).slice(0,4))||2026;
@@ -308,23 +351,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
  };
  const ledgerYears=[...new Set([year,...activePayments.map(p=>p.academicYear).filter(Boolean),...structures.map(x=>x.academicYear).filter(Boolean)])].sort((a,b)=>String(b).localeCompare(String(a)));
  const ledgerStudent=students.find(s=>s.id===ledgerStudentId);
- const normalizeLedgerText=value=>String(value??'').toLowerCase().trim().replace(/\s+/g,' ');
- const normalizeLedgerDigits=value=>String(value??'').replace(/\D/g,'');
- const ledgerMatchesStudent=(st,rawQuery)=>{
-  const q=normalizeLedgerText(rawQuery);if(!q)return false;
-  const textFields=[st.name,st.studentName,st.admissionNo,st.admissionNumber,st.rollNo,st.rollNumber,st.fatherName,st.motherName,st.guardianName,st.phone,st.mobile,st.mobileNumber,st.whatsapp,st.whatsappNumber,st.fatherMobile,st.motherMobile,st.penNumber,st.pen,st.section];
-  if(textFields.some(value=>normalizeLedgerText(value).includes(q)))return true;
-  const qDigits=normalizeLedgerDigits(q);
-  if(qDigits){
-   const digitFields=[st.phone,st.mobile,st.mobileNumber,st.whatsapp,st.whatsappNumber,st.fatherMobile,st.motherMobile,st.penNumber,st.pen,st.rollNo,st.rollNumber,st.admissionNo,st.admissionNumber,st.aadhaarLast4,st.aadharLast4];
-   if(digitFields.some(value=>normalizeLedgerDigits(value).includes(qDigits)))return true;
-   // Aadhaar is searched only by its last four digits; never expose or match the full number in the UI.
-   const aadhaarValues=[st.aadhaar,st.aadhar,st.aadhaarNo,st.aadharNo,st.aadhaarNumber,st.aadharNumber];
-   if(qDigits.length<=4&&aadhaarValues.some(value=>normalizeLedgerDigits(value).slice(-4).includes(qDigits)))return true;
-  }
-  return false;
- };
- const ledgerCandidates=activeStudents.filter(st=>(ledgerClass==='All Classes'||String(st.className||'')===ledgerClass)&&ledgerMatchesStudent(st,ledgerSearch));
+ const ledgerCandidates=activeStudents.filter(st=>(ledgerClass==='All Classes'||String(st.className||'')===ledgerClass)&&`${st.name||''} ${st.admissionNo||''} ${st.rollNo||''} ${st.rollNumber||''} ${st.fatherName||''} ${st.phone||''} ${st.whatsapp||''} ${st.penNumber||''} ${st.aadhaarLast4||String(st.aadhaar||'').slice(-4)}`.toLowerCase().includes(ledgerSearch.toLowerCase().trim()));
  const ledgerPayments=ledgerStudent?activePayments.filter(p=>p.studentId===ledgerStudent.id&&p.academicYear===year).sort((a,b)=>String(b.paymentDate||'').localeCompare(String(a.paymentDate||''))):[];
  const ledgerAllPayments=ledgerStudent?activePayments.filter(p=>p.studentId===ledgerStudent.id).sort((a,b)=>String(b.paymentDate||'').localeCompare(String(a.paymentDate||''))):[];
  const ledgerDue=ledgerStudent?feeDueDetails(ledgerStudent,year):null;
@@ -453,16 +480,16 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
    <div style={formGrid}>
     <label style={labelStyle}>Academic Year<select style={inputStyle} value={year} onChange={e=>{setYear(e.target.value);setLedgerStudentId('');}}>{ledgerYears.map(y=><option key={y}>{y}</option>)}</select></label>
     <label style={labelStyle}>Class<select style={inputStyle} value={ledgerClass} onChange={e=>{setLedgerClass(e.target.value);setLedgerStudentId('');}}><option>All Classes</option>{collectionClasses.map(c=><option key={c}>{c}</option>)}</select></label>
-    <label style={labelStyle}>Search Student<input style={inputStyle} value={ledgerSearch} onChange={e=>{const value=e.target.value;setLedgerSearch(value);const matches=value.trim()?activeStudents.filter(st=>(ledgerClass==='All Classes'||String(st.className||'')===ledgerClass)&&ledgerMatchesStudent(st,value)):[];setLedgerStudentId(matches.length===1?matches[0].id:'');}} placeholder="Name / Admission / Roll / Father / Mother / Mobile / WhatsApp / PEN / Aadhaar last 4"/><small className="muted">{ledgerSearch.trim()?`${ledgerCandidates.length} matching student(s). ${ledgerCandidates.length===1?'Student automatically selected.':'Select the correct student from the list.'}`:'Search by student name, admission/roll number, parent name, mobile, WhatsApp, PEN or Aadhaar last 4 digits.'}</small></label>
+    <label style={labelStyle}>Search Student<input style={inputStyle} value={ledgerSearch} onChange={e=>{const value=e.target.value;setLedgerSearch(value);const q=value.toLowerCase().trim();const matches=q?activeStudents.filter(st=>(ledgerClass==='All Classes'||String(st.className||'')===ledgerClass)&&`${st.name||''} ${st.admissionNo||''} ${st.rollNo||''} ${st.rollNumber||''} ${st.fatherName||''} ${st.phone||''} ${st.whatsapp||''} ${st.penNumber||''} ${st.aadhaarLast4||String(st.aadhaar||'').slice(-4)}`.toLowerCase().includes(q)):[];setLedgerStudentId(matches.length===1?matches[0].id:'');}} placeholder="Name / Admission No. / Roll No. / Father / Mobile / PEN / Aadhaar last 4"/><small className="muted">{ledgerSearch.trim()?`${ledgerCandidates.length} matching student(s). ${ledgerCandidates.length===1?'Student automatically selected.':'Select the correct student from the list.'}`:'Type student details to search.'}</small></label>
     <label style={labelStyle}>Select Student<select style={inputStyle} value={ledgerStudentId} onChange={e=>setLedgerStudentId(e.target.value)}><option value="">Select Student</option>{ledgerCandidates.map(st=><option key={st.id} value={st.id}>{st.name} · {st.className} · Adm: {st.admissionNo||'—'} · Father: {st.fatherName||'—'}</option>)}</select></label>
    </div>
    {ledgerStudent&&<div className="finance-card" style={{display:'grid',gap:10}}>
     <div><h3 style={{margin:'0 0 5px'}}>{ledgerStudent.name}</h3><div className="muted">Class: {ledgerStudent.className||'—'} · Admission No: {ledgerStudent.admissionNo||'—'} · Roll No: {ledgerStudent.rollNo||ledgerStudent.rollNumber||'—'}<br/>Father: {ledgerStudent.fatherName||'—'} · Mobile: {ledgerStudent.phone||ledgerStudent.whatsapp||'—'}</div></div>
     <div style={statsGrid}><div className="stat"><small>Total Paid · {year}</small><strong>{money(ledgerPayments.reduce((a,p)=>a+Number(p.amount||0),0))}</strong></div><div className="stat"><small>Remaining · {year}</small><strong>{money(ledgerDue?.grand||0)}</strong></div><div className="stat"><small>Payment Entries · {year}</small><strong>{ledgerPayments.length}</strong></div></div>
     {ledgerDue?.missingStructure?<p style={{color:'#b45309',fontWeight:700}}>Fee Setup Missing for {year}. Payment history is still available below.</p>:<><h4 style={{margin:'5px 0'}}>Month-wise Fee Status · {year}</h4>{renderTable(['Month','Fee Name','Status','Amount'],ledgerMonthlyStatus.map(x=>[x.month,x.feeName,x.status==='Paid'?<span style={{color:'#15803d',fontWeight:700}}>Paid ✓</span>:x.status==='Remaining'?<span style={{color:'#b91c1c',fontWeight:700}}>Remaining</span>:<span style={{color:'#94a3b8'}}>—</span>,x.status==='Remaining'?money(x.amount):x.status==='Paid'?'Paid':'—']))}<h4 style={{margin:'5px 0'}}>Annual / One-time Pending Fees</h4>{renderTable(['Fee Name','Pending Amount'],ledgerDue.lines.filter(x=>x.month==='Annual / One-time').map(x=>[x.type,money(x.amount)]))}<b>Grand Total Remaining: {money(ledgerDue.grand)}</b></>}
-    <h4 style={{margin:'5px 0'}}>Payment History · {year}</h4>{renderTable(['Date','Fee Type','Months','Amount','Mode','Receipt'],ledgerPayments.map(p=>[p.paymentDate,p.feeType,p.months||'—',money(p.amount),p.paymentMode,p.receiptNo]))}
+    <h4 style={{margin:'5px 0'}}>Payment History · {year}</h4><p className="muted">Edit, Cancel and Refund require a reason and confirmation. Cancelled entries are excluded from paid totals. Refunds are stored as separate negative payment entries. Original values are retained in feePaymentAudit.</p>{renderTable(['Date','Fee Type','Months','Amount','Mode','Receipt','Correction'],ledgerPayments.map(p=>[p.paymentDate,p.feeType,p.months||'—',money(p.amount),p.paymentMode,p.receiptNo,<div style={{display:'flex',gap:5,flexWrap:'wrap'}}>{p.status==='cancelled'?<span style={{color:'#b91c1c',fontWeight:700}}>CANCELLED</span>:<><button style={secondary} onClick={()=>correctPayment(p)}>Edit</button><button style={secondary} onClick={()=>cancelPayment(p)}>Cancel</button><button style={secondary} onClick={()=>addRefund(p)}>Refund</button></>}</div>]))}
     <div style={{display:'flex',gap:7,flexWrap:'wrap'}}><button style={secondary} onClick={ledgerShare}>Share</button><button style={secondary} onClick={ledgerCopy}>Copy</button><button style={secondary} onClick={ledgerPrint}>PDF Download / Page Setup</button><button style={secondary} onClick={ledgerPrint}>Print</button></div>
-    <details><summary style={{cursor:'pointer',fontWeight:700}}>All Previous Sessions Payment History ({ledgerAllPayments.length})</summary>{renderTable(['Session','Date','Fee Type','Months','Amount','Mode','Receipt'],ledgerAllPayments.map(p=>[p.academicYear||'—',p.paymentDate,p.feeType,p.months||'—',money(p.amount),p.paymentMode,p.receiptNo]))}</details>
+    <details><summary style={{cursor:'pointer',fontWeight:700}}>All Previous Sessions Payment History ({ledgerAllPayments.length})</summary>{renderTable(['Session','Date','Fee Type','Months','Amount','Mode','Receipt','Status'],ledgerAllPayments.map(p=>[p.academicYear||'—',p.paymentDate,p.feeType,p.months||'—',money(p.amount),p.paymentMode,p.receiptNo]))}</details>
    </div>}
   </div>;
   if(active==='Fee Receipts')return <><input style={{...inputStyle,maxWidth:380}} value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search receipt / student"/>{renderTable(['Receipt','Date','Student','Fee Type','Amount','View'],groupedReceiptPayments(activePayments).filter(p=>`${p.receiptNo} ${p.studentName} ${p.feeType}`.toLowerCase().includes(search.toLowerCase())).map(p=>[p.receiptNo,p.paymentDate,p.studentName,receiptItems(p).map(x=>x.feeType).join(' + '),money(receiptTotal(p)),<button style={secondary} onClick={()=>{setViewReceipt(p);setIncludeRemainingFees(false);}}>View Receipt</button>]))}{viewReceipt&&receiptCard(viewReceipt)}{actions('Fee Receipts',table(['Receipt','Date','Student','Fee Type','Amount'],groupedReceiptPayments(activePayments).map(p=>[p.receiptNo,p.paymentDate,p.studentName,receiptItems(p).map(x=>x.feeType).join(' + '),money(receiptTotal(p))])))}</>;
