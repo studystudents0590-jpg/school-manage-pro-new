@@ -41,8 +41,13 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
  const paidMonths=activePayments.filter(p=>p.studentId===studentId&&p.feeType===feeType&&p.academicYear===year).flatMap(p=>String(p.months||'').split(',').map(x=>x.trim()).filter(Boolean));
  const toggleMonth=m=>setMonths(old=>old.includes(m)?old.filter(x=>x!==m):[...old,m]);
  const changeCollectionClass=value=>{setCollectionClass(value);setStudentId('');setStudentSearch('');setMonths([]);setAmount('');setError('');};
- const changeStudent=value=>{setStudentId(value);setMonths([]);setAmount('');setError('');};
- const changeFeeType=value=>{setFeeType(value);setMonths([]);setAmount('');};
+ const getStudentConfig=st=>st?.feeConfig||{};
+ const studentHasVan=st=>{const c=getStudentConfig(st);return Boolean(c.transportOpted===true||c.transportOpted==='Yes')&&Number(c.monthlyVanFee||st?.monthlyVanFee||0)>0;};
+ const monthIndex=m=>monthNames.indexOf(m);
+ const vanStartMonthFor=st=>{const c=getStudentConfig(st);const d=c.vanStartDate||st?.vanStartDate||st?.admissionDate||'';if(!d)return 'April';const dt=new Date(`${String(d).slice(0,10)}T00:00:00`);if(Number.isNaN(dt.getTime()))return 'April';const mi=(dt.getMonth()+9)%12;return monthNames[mi]||'April';};
+ const feeAmountFor=(st,type)=>{const c=getStudentConfig(st);if(type==='Monthly School Fee')return Number(c.monthlySchoolFee??st?.monthlySchoolFee??0);if(type==='Monthly Van Fee')return Number(c.monthlyVanFee??st?.monthlyVanFee??0);if(type==='Admission Fee'||type==='Renewal Fee')return Number(c.admissionFee??st?.admissionFee??st?.renewalFee??0);if(type==='Exam Fee')return Number(c.examFee??st?.examFee??0);if(type==='Other Fee')return Number(c.otherFeeAmount??st?.otherFeeAmount??0);return 0;};
+ const changeStudent=value=>{const st=students.find(x=>x.id===value);const nextType=feeType==='Monthly Van Fee'&&!studentHasVan(st)?'Monthly School Fee':feeType;setStudentId(value);setFeeType(nextType);setMonths([]);setAmount(st?String(feeAmountFor(st,nextType)||''):'');setError('');};
+ const changeFeeType=value=>{setFeeType(value);setMonths([]);setAmount(selectedStudent?String(feeAmountFor(selectedStudent,value)||''):'');};
  const changeYear=value=>{setYear(value);setMonths([]);};
  const paidMonthsFor=(sid,type,session)=>activePayments.filter(p=>p.studentId===sid&&p.feeType===type&&p.academicYear===session).flatMap(p=>String(p.months||'').split(',').map(x=>x.trim()).filter(Boolean));
  const monthsDueThrough=(session,student)=>{
@@ -52,19 +57,24 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
   const cutoff=now>sessionEnd?12:now<new Date(start,3,1)?0:Math.min(12,Math.max(0,(now.getFullYear()-start)*12+now.getMonth()-3+1));
   return monthNames.slice(0,cutoff);
  };
+ const vanStartMonth=vanStartMonthFor(selectedStudent);
+ const currentSessionMonth=monthsDueThrough(year,selectedStudent||{}).slice(-1)[0]||'';
+ const eligibleMonths=feeType==='Monthly Van Fee'?monthNames.filter(m=>monthIndex(m)>=monthIndex(vanStartMonth)&&monthIndex(m)<=monthIndex(currentSessionMonth)):monthNames.filter(m=>monthIndex(m)<=monthIndex(currentSessionMonth));
  const feeDueDetails=(st,session=year)=>{
   const saved=st.feeConfig||{};
   const structure=structures.find(x=>x.className===st.className&&x.academicYear===session);
   const matchesSaved=String(saved.academicYear||st.academicYear||'')===String(session);
   const feeSource=matchesSaved?{monthlyFee:saved.monthlySchoolFee,vanFee:saved.transportOpted?saved.monthlyVanFee:0,admissionFee:saved.admissionType==='New Admission'?saved.admissionFee:0,renewalFee:saved.admissionType==='Renewal'?saved.admissionFee:0,examFee:saved.examFee,otherFee:saved.otherFeeAmount,otherFeeName:saved.otherFeeName,admissionFeeStatus:saved.admissionFeeStatus,examFeeStatus:saved.examFeeStatus}:structure;
   if(!feeSource)return {lines:[],totals:{},grand:0,missingStructure:true};
+  const transportOpted=Boolean(saved.transportOpted===true||saved.transportOpted==='Yes'||st.transportOpted===true||st.transportOpted==='Yes');
+  const normalizedFeeSource={...feeSource,vanFee:transportOpted?Number(feeSource.vanFee||0):0};
   const dueMonths=monthsDueThrough(session,st);
   const paidFor=(type)=>activePayments.filter(p=>p.studentId===st.id&&p.academicYear===session&&p.feeType===type);
   const paidMonthSet=(type)=>new Set(paidFor(type).flatMap(p=>String(p.months||'').split(',').map(x=>x.trim()).filter(Boolean)));
   const lines=[];
-  const addMonthly=(type,label,rate)=>{const paidSet=paidMonthSet(type);dueMonths.forEach(m=>{if(!paidSet.has(m)&&Number(rate||0)>0)lines.push({month:m,type:label,amount:Number(rate||0)});});};
-  addMonthly('Monthly School Fee','School Fee',feeSource.monthlyFee);
-  addMonthly('Monthly Van Fee','Van Fee',feeSource.vanFee);
+  const addMonthly=(type,label,rate)=>{const paidSet=paidMonthSet(type);const eligible=type==='Monthly Van Fee'?dueMonths.filter(m=>monthIndex(m)>=monthIndex(vanStartMonthFor(st))):dueMonths;eligible.forEach(m=>{if(!paidSet.has(m)&&Number(rate||0)>0)lines.push({month:m,type:label,amount:Number(rate||0)});});};
+  addMonthly('Monthly School Fee','School Fee',normalizedFeeSource.monthlyFee);
+  addMonthly('Monthly Van Fee','Van Fee',normalizedFeeSource.vanFee);
   const admissionDate=st.admissionDate||st.admissionOn||st.joiningDate||'';
   const admissionSession=admissionDate?`${String(admissionDate).slice(0,4)}-${String(Number(String(admissionDate).slice(0,4))+1).slice(-2)}`:session;
   const oneTime=[['Admission Fee','Admission Fee',admissionSession===session&&feeSource.admissionFeeStatus!=='Paid'?feeSource.admissionFee:0],['Renewal Fee','Renewal Fee',feeSource.admissionFeeStatus!=='Paid'?feeSource.renewalFee:0],['Exam Fee','Exam Fee',feeSource.examFeeStatus==='Paid'?0:feeSource.examFee],['Other Fee','Other Fee',feeSource.otherFee]];
@@ -88,7 +98,8 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
    const schoolPaid=paidMonthsFor(st.id,'Monthly School Fee',session);
    const vanPaid=paidMonthsFor(st.id,'Monthly Van Fee',session);
    const schoolUnpaid=dueMonthNames.filter(m=>!schoolPaid.includes(m)).length;
-   const vanUnpaid=dueMonthNames.filter(m=>!vanPaid.includes(m)).length;
+   const vanStart=vanStartMonthFor(st);
+   const vanUnpaid=dueMonthNames.filter(m=>monthIndex(m)>=monthIndex(vanStart)&&!vanPaid.includes(m)).length;
    const balance=schoolUnpaid*Number(structure.monthlyFee||0)+vanUnpaid*Number(structure.vanFee||0);
    if(isSelected)currentDue+=balance; else if(sy<sessionStart)previousDue+=balance;
   });
@@ -103,7 +114,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
  const renderTable=(headers,items)=><div className="table-wrap"><table><thead><tr>{headers.map(h=><th key={h}>{h}</th>)}</tr></thead><tbody>{items.length?items.map((row,i)=><tr key={i}>{row.map((v,j)=><td key={j}>{v??'—'}</td>)}</tr>):<tr><td colSpan={headers.length}>No records found.</td></tr>}</tbody></table></div>;
  const shareReport=(title,body)=>{const txt=`${schoolName||'School'}\n${title}\n${body.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').slice(0,2500)}`;if(navigator.share)navigator.share({title,text:txt}).catch(()=>{});else if(navigator.clipboard)navigator.clipboard.writeText(txt).then(()=>setMessage('Report copied. You can share it now.'));else setMessage('Use Print / PDF to save this report.');};
  const actions=(title,body)=><div style={{display:'flex',gap:7,flexWrap:'wrap',margin:'12px 0'}}><button style={secondary} onClick={()=>shareReport(title,body)}>Share</button><button style={secondary} onClick={()=>shareReport(title,body)}>Send</button><button style={secondary} onClick={()=>printDoc(title,body)}>PDF</button><button style={secondary} onClick={()=>printDoc(title,body)}>Print</button></div>;
- const savePayment=async e=>{e.preventDefault();if(!schoolId||!collectionClass)return setError('Select a class first.');if(!selectedStudent)return setError('Select a student from the selected class.');const n=Number(amount);if(!(n>0))return setError('Enter a valid amount.');if(monthlyFeeType&&!months.length)return setError('Select at least one unpaid month.');if(months.some(m=>paidMonths.includes(m)))return setError('A selected month is already paid.');try{setError('');const receiptNo=`R-${Date.now()}`;await addDoc(collection(db,'feePayments'),{schoolId,studentId:selectedStudent.id,studentName:selectedStudent.name||'',admissionNo:selectedStudent.admissionNo||'',className:selectedStudent.className||'',feeType,amount:n,paymentDate,academicYear:year,paymentMode:method,months:months.join(', '),notes:notes.trim(),receiptNo,status:'paid',createdAt:serverTimestamp(),createdBy:profile?.displayName||profile?.email||''});setAmount('');setMonths([]);setNotes('');setMessage(`Payment saved. Receipt: ${receiptNo}`);}catch(e){setError(e.message);}};
+ const savePayment=async e=>{e.preventDefault();if(!schoolId||!collectionClass)return setError('Select a class first.');if(!selectedStudent)return setError('Select a student from the selected class.');const n=Number(amount);if(!(n>0))return setError('Enter a valid amount.');if(feeType==='Monthly Van Fee'&&!studentHasVan(selectedStudent))return setError('This student has no transport service in Admission Form.');if(monthlyFeeType&&!months.length)return setError('Select at least one eligible unpaid month.');if(monthlyFeeType&&months.some(m=>!eligibleMonths.includes(m)))return setError('Selected month is outside the fee period.');if(months.some(m=>paidMonths.includes(m)))return setError('A selected month is already paid.');try{setError('');const receiptNo=`R-${Date.now()}`;await addDoc(collection(db,'feePayments'),{schoolId,studentId:selectedStudent.id,studentName:selectedStudent.name||'',admissionNo:selectedStudent.admissionNo||'',className:selectedStudent.className||'',feeType,amount:n,paymentDate,academicYear:year,paymentMode:method,months:months.join(', '),notes:notes.trim(),receiptNo,status:'paid',createdAt:serverTimestamp(),createdBy:profile?.displayName||profile?.email||''});setAmount('');setMonths([]);setNotes('');setMessage(`Payment saved. Receipt: ${receiptNo}`);}catch(e){setError(e.message);}};
  const saveStructure=async e=>{e.preventDefault();if(!schoolId||!className)return setError('Select class.');try{const old=structures.find(x=>x.className===className&&x.academicYear===year);const data={schoolId,className,monthlyFee:Number(monthlyFee||0),admissionFee:Number(admissionFee||0),vanFee:Number(vanFee||0),renewalFee:Number(renewalFee||0),examFee:Number(examFee||0),otherFee:Number(otherFee||0),academicYear:year,updatedAt:serverTimestamp()};if(old)await updateDoc(doc(db,'feeStructures',old.id),data);else await addDoc(collection(db,'feeStructures'),{...data,createdAt:serverTimestamp()});setMessage('Fee structure saved.');}catch(e){setError(e.message);}};
  const saveExpense=async e=>{e.preventDefault();try{await addDoc(collection(db,'schoolExpenses'),{schoolId,title:expenseTitle.trim(),amount:Number(expenseAmount),expenseDate,academicYear:year,createdAt:serverTimestamp()});setExpenseTitle('');setExpenseAmount('');setMessage('Expense saved.');}catch(e){setError(e.message);}};
  const saveDiscount=async e=>{e.preventDefault();const st=students.find(s=>s.id===discountStudent);if(!st)return setError('Select student.');try{await addDoc(collection(db,'feeDiscounts'),{schoolId,studentId:st.id,studentName:st.name||'',amount:Number(discountAmount),reason:discountReason,academicYear:year,createdAt:serverTimestamp()});setMessage('Discount saved.');setDiscountAmount('');setDiscountReason('');}catch(e){setError(e.message);}};
@@ -115,12 +126,12 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
      <label style={labelStyle}>Class<select style={inputStyle} required value={collectionClass} onChange={e=>changeCollectionClass(e.target.value)}><option value="">Select Class</option>{collectionClasses.map(c=><option value={c} key={c}>{c}</option>)}</select></label>
      <label style={labelStyle}>Search Student<input style={inputStyle} value={studentSearch} disabled={!collectionClass} onChange={e=>{setStudentSearch(e.target.value);setStudentId('');setMonths([]);}} placeholder="Name / Roll No. / Admission / Father / Mobile / PEN"/></label>
      <label style={labelStyle}>Select Student<select style={inputStyle} required disabled={!collectionClass} value={studentId} onChange={e=>changeStudent(e.target.value)}><option value="">{collectionClass?'Select Student':'First Select Class'}</option>{searchableCollectionStudents.map(s=><option value={s.id} key={s.id}>{s.name} · Adm: {s.admissionNo||'—'} · Roll: {s.rollNo||s.rollNumber||'—'} · Father: {s.fatherName||'—'} · Mobile: {s.whatsapp||s.phone||'—'}</option>)}</select></label>
-     <label style={labelStyle}>Fee Type<select style={inputStyle} value={feeType} onChange={e=>changeFeeType(e.target.value)}>{['Admission Fee','Renewal Fee','Monthly School Fee','Monthly Van Fee','Exam Fee','Other Fee'].map(x=><option key={x}>{x}</option>)}</select></label>
+     <label style={labelStyle}>Fee Type<select style={inputStyle} value={feeType} onChange={e=>changeFeeType(e.target.value)}>{['Admission Fee','Renewal Fee','Monthly School Fee',...(studentHasVan(selectedStudent)?['Monthly Van Fee']:[]),'Exam Fee','Other Fee'].map(x=><option key={x}>{x}</option>)}</select></label>
      <label style={labelStyle}>Amount (₹)<input style={inputStyle} type="number" min="1" required value={amount} onChange={e=>setAmount(e.target.value)}/></label>
      <label style={labelStyle}>Payment Date<input style={inputStyle} type="date" value={paymentDate} onChange={e=>setPaymentDate(e.target.value)}/></label>
      <label style={labelStyle}>Academic Session<input style={inputStyle} value={year} onChange={e=>changeYear(e.target.value)}/></label>
      <label style={labelStyle}>Payment Mode<select style={inputStyle} value={method} onChange={e=>setMethod(e.target.value)}>{['Cash','UPI','Bank','Online'].map(x=><option key={x}>{x}</option>)}</select></label>
-     {monthlyFeeType&&<div style={{gridColumn:'1/-1'}}><div style={labelStyle}>{feeType==='Monthly School Fee'?'School Fee Months':'Van Fee Months'} (Paid months cannot be selected)</div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(105px,1fr))',gap:8}}>{monthNames.map(m=>{const locked=paidMonths.includes(m);const checked=months.includes(m);return <label key={m} style={{display:'flex',alignItems:'center',gap:6,padding:9,border:'1px solid #cbd5e1',borderRadius:8,background:locked?'#ecfdf5':checked?'#eff6ff':'#fff',opacity:locked ? 0.7 : 1}}><input type="checkbox" disabled={locked} checked={locked||checked} onChange={()=>toggleMonth(m)}/><span>{m}{locked?' ✓ Paid':''}</span></label>})}</div></div>}
+     {monthlyFeeType&&<div style={{gridColumn:'1/-1'}}><div style={labelStyle}>{feeType==='Monthly School Fee'?'School Fee Months':`Van Fee Months (starts ${vanStartMonth})`} (Paid months cannot be selected)</div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(105px,1fr))',gap:8}}>{eligibleMonths.map(m=>{const locked=paidMonths.includes(m);const checked=months.includes(m);return <label key={m} style={{display:'flex',alignItems:'center',gap:6,padding:9,border:'1px solid #cbd5e1',borderRadius:8,background:locked?'#ecfdf5':checked?'#eff6ff':'#fff',opacity:locked ? 0.7 : 1}}><input type="checkbox" disabled={locked} checked={locked||checked} onChange={()=>toggleMonth(m)}/><span>{m}{locked?' ✓ Paid':''}</span></label>})}</div></div>}
      <label style={labelStyle}>Notes<input style={inputStyle} value={notes} onChange={e=>setNotes(e.target.value)}/></label>
      <button style={primary}>Save Payment & Create Receipt</button>
     </form>
@@ -181,6 +192,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
     const dueMonths=new Set(monthsDueThrough(year,chosen));
     const schoolPaid=new Set(paidMonthsFor(chosen.id,'Monthly School Fee',year));
     const vanPaid=new Set(paidMonthsFor(chosen.id,'Monthly Van Fee',year));
+    const vanStart=vanStartMonthFor(chosen);
     const rows=[];
     monthNames.forEach(month=>{
      const add=(feeName,rate,paidSet)=>{
@@ -192,7 +204,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
       rows.push({month,feeName,status,amount:status==='Remaining'?amount:0});
      };
      add('School Fee',feeSource.monthlyFee,schoolPaid);
-     add('Van Fee',feeSource.vanFee,vanPaid);
+     if(monthIndex(month)>=monthIndex(vanStart))add('Van Fee',feeSource.vanFee,vanPaid);
     });
     return rows;
    })():[];
