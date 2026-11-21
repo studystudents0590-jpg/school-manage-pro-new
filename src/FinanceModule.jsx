@@ -157,15 +157,21 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
     return !queryText||textMatch||numericMatch;
    });
    const allStudentRows=searched.map(st=>({student:st,detail:feeDueDetails(st,year)}));
-   const monthFiltered=allStudentRows.map(x=>{
-    const lines=duesMonth==='All Months'?x.detail.lines:x.detail.lines.filter(l=>l.month===duesMonth||l.month==='Annual / One-time');
-    const totals={};lines.forEach(l=>totals[l.type]=(totals[l.type]||0)+Number(l.amount||0));
-    return {...x,detail:{...x.detail,lines,totals,grand:lines.reduce((a,l)=>a+Number(l.amount||0),0)}};
-   });
+   // The selected month means ONLY that month's monthly dues. Annual/one-time
+   // charges are shown under All Months and in the student's full-year details.
+   const forSelectedMonth=detail=>{
+    if(duesMonth==='All Months')return detail;
+    const lines=detail.lines.filter(line=>line.month===duesMonth);
+    const totals={};
+    lines.forEach(line=>{totals[line.type]=(totals[line.type]||0)+Number(line.amount||0);});
+    return {...detail,lines,totals,grand:lines.reduce((sum,line)=>sum+Number(line.amount||0),0)};
+   };
+   const monthFiltered=allStudentRows.map(x=>({...x,detail:forSelectedMonth(x.detail)}));
    const chosen=students.find(st=>st.id===duesStudentId);
    const chosenDetail=chosen?feeDueDetails(chosen,year):null;
-   const classSummary=collectionClasses.map(c=>{
-    const list=students.filter(st=>String(st.className||'').trim()===String(c).trim()).map(st=>({st,d:feeDueDetails(st,year)}));
+   const summaryClasses=duesClass==='All Classes'?collectionClasses:[duesClass];
+   const classSummary=summaryClasses.map(c=>{
+    const list=students.filter(st=>String(st.className||'').trim()===String(c).trim()).map(st=>({st,d:forSelectedMonth(feeDueDetails(st,year))}));
     const due=list.filter(x=>x.d.grand>0);
     return {className:c,totalStudents:list.length,count:due.length,total:due.reduce((a,x)=>a+x.d.grand,0)};
    }).filter(x=>x.totalStudents>0);
@@ -176,8 +182,8 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
      <label style={labelStyle}>Month<select style={inputStyle} value={duesMonth} onChange={e=>setDuesMonth(e.target.value)}><option>All Months</option>{monthNames.map(m=><option key={m}>{m}</option>)}</select></label>
     </div>
     <input style={inputStyle} placeholder="Search Name / Mobile / Aadhaar Last 4 Digits / Admission No. / Roll No. / PEN / Father Name" value={search} onChange={e=>setSearch(e.target.value)}/>
-    <div className="finance-card"><h3 style={{marginTop:0}}>Class-wise Pending Summary · {year}</h3>{renderTable(['Class','Total Students','Students with Due','Total Pending'],classSummary.map(x=>[<button style={secondary} onClick={()=>{setDuesClass(x.className);setDuesStudentId('');}}>{x.className}</button>,x.totalStudents,x.count,money(x.total)]))}</div>
-    <div className="finance-card"><h3 style={{marginTop:0}}>Student-wise Fee Status · {duesMonth}</h3><p className="muted">चुने हुए विद्यार्थी को खोलकर उसकी पूरी साल की फीस हिस्ट्री देखें। सभी विद्यार्थी दिखाई देंगे—फीस बाकी हो या पूरी जमा हो।</p>{renderTable(['Student','Class','Father','Mobile','Fee Status','Pending','Details'],monthFiltered.map(x=>[x.student.name||'—',x.student.className||'—',x.student.fatherName||'—',x.student.phone||x.student.whatsapp||'—',x.detail.missingStructure?<span style={{color:'#b45309',fontWeight:700}}>Fee Setup Missing</span>:x.detail.grand>0?<span style={{color:'#b91c1c',fontWeight:700}}>Pending</span>:<span style={{color:'#15803d',fontWeight:700}}>Fully Paid</span>,money(x.detail.grand),<button style={primary} onClick={()=>setDuesStudentId(x.student.id)}>View Details</button>]))}</div>
+    <div className="finance-card"><h3 style={{marginTop:0}}>Class-wise Fee Summary · {year} · {duesMonth}</h3>{renderTable(['Class','Total Students','Students with Due','Total Pending'],classSummary.map(x=>[<button style={secondary} onClick={()=>{setDuesClass(x.className);setDuesStudentId('');}}>{x.className}</button>,x.totalStudents,x.count,money(x.total)]))}</div>
+    <div className="finance-card"><h3 style={{marginTop:0}}>Student-wise Fee Status · {duesMonth}</h3><p className="muted">चुनी हुई Class के सभी विद्यार्थी दिखाई देंगे। Month चुनने पर केवल उसी महीने की School/Van Fee दिखाई जाएगी; पूरी साल की हिस्ट्री View Details में मिलेगी।</p>{renderTable(['Student','Class','Father','Mobile','Fee Status','Pending','Details'],monthFiltered.map(x=>[x.student.name||'—',x.student.className||'—',x.student.fatherName||'—',x.student.phone||x.student.whatsapp||'—',x.detail.missingStructure?<span style={{color:'#b45309',fontWeight:700}}>Fee Setup Missing</span>:x.detail.grand>0?<span style={{color:'#b91c1c',fontWeight:700}}>Pending</span>:<span style={{color:'#15803d',fontWeight:700}}>Fully Paid</span>,money(x.detail.grand),<button style={primary} onClick={()=>setDuesStudentId(x.student.id)}>View Details</button>]))}</div>
     {chosen&&chosenDetail&&<div className="finance-card"><div style={{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}><div><h3 style={{margin:'0 0 5px'}}>{chosen.name}</h3><div className="muted">{chosen.className} · Father: {chosen.fatherName||'—'} · Mobile: {chosen.phone||chosen.whatsapp||'—'}</div></div><button style={secondary} onClick={()=>setDuesStudentId('')}>Close</button></div><label style={{...labelStyle,marginTop:14}}>Academic Year<select style={inputStyle} value={year} onChange={e=>setYear(e.target.value)}>{['2026-27','2025-26','2024-25','2023-24'].map(x=><option key={x}>{x}</option>)}</select></label>{chosenDetail.missingStructure?<p style={{color:'#b45309',fontWeight:700}}>Fee Setup Missing for {year}. Please check this student's Admission Form Fee Setup or add a Fee Structure for this class and academic year.</p>:<><h4>Month-wise Pending Fees</h4>{renderTable(['Month','Fee Name','Pending Amount'],chosenDetail.lines.map(l=>[l.month,l.type,money(l.amount)]))}{chosenDetail.grand===0&&<p style={{color:'#15803d',fontWeight:700}}>No pending fee. This student is Fully Paid for the selected session.</p>}<h4>Category-wise Total</h4>{renderTable(['Fee Category','Total Pending'],Object.entries(chosenDetail.totals).map(([k,v])=>[k,money(v)]))}<div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:12,padding:12,background:'#fff1f2',borderRadius:8}}><b>Grand Total Due</b><strong style={{fontSize:22,color:chosenDetail.grand>0?'#be123c':'#15803d'}}>{money(chosenDetail.grand)}</strong></div></>}</div>}
     <p className="muted">Automatic dues use the selected session's saved student Fee Setup first, then the class Fee Structure as fallback. Monthly School/Van fees are calculated from April through the current month. One-time fees are included only when configured. Aadhaar search uses the stored Aadhaar field or last four digits; keep full Aadhaar masked and protected.</p>
    </div>;
