@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { addDoc, collection, doc, onSnapshot, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+import { addDoc, collection, doc, onSnapshot, query, serverTimestamp, updateDoc, where, writeBatch, setDoc, getDoc } from 'firebase/firestore';
 import { db } from './firebase';
 const money=n=>'₹'+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2});
 const inputStyle={width:'100%',padding:11,border:'1px solid #cbd5e1',borderRadius:8,boxSizing:'border-box',fontSize:14,background:'#fff'};
@@ -16,6 +16,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
  const [reportSearch,setReportSearch]=useState('');
  const [viewReceipt,setViewReceipt]=useState(null),[includeRemainingFees,setIncludeRemainingFees]=useState(false),[includeVanTogether,setIncludeVanTogether]=useState(false),[vanMonths,setVanMonths]=useState([]);
  const [duesClass,setDuesClass]=useState('All Classes'),[duesMonth,setDuesMonth]=useState('All Months'),[duesStudentId,setDuesStudentId]=useState('');
+ const [newSession,setNewSession]=useState('2027-28'),[promotionPreview,setPromotionPreview]=useState(false),[feeUpdateClass,setFeeUpdateClass]=useState(''),[bulkSchoolFee,setBulkSchoolFee]=useState(''),[feeUpdateRoute,setFeeUpdateRoute]=useState(''),[bulkVanFee,setBulkVanFee]=useState(''),[sessionBusy,setSessionBusy]=useState(false);
  useEffect(()=>{
   if(!schoolId){setLoading(false);return;}
   setLoading(true);setError('');
@@ -23,8 +24,9 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
   const unsubs=refs.map(([name,setter])=>onSnapshot(query(collection(db,name),where('schoolId','==',schoolId)),snap=>setter(snap.docs.map(d=>({id:d.id,...d.data()}))),e=>setError(e.message)));
   setLoading(false);return()=>unsubs.forEach(u=>u());
  },[schoolId]);
- const collectionClasses=[...new Set(students.map(s=>String(s.className||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
- const collectionStudents=students.filter(s=>String(s.className||'').trim()===collectionClass);
+ const activeStudents=students.filter(s=>!s.passedOut&&s.status!=='Passed Out');
+ const collectionClasses=[...new Set(activeStudents.map(s=>String(s.className||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+ const collectionStudents=activeStudents.filter(s=>String(s.className||'').trim()===collectionClass);
  const searchableCollectionStudents=collectionStudents.filter(s=>`${s.name||''} ${s.admissionNo||''} ${s.penNumber||''} ${s.rollNo||''} ${s.rollNumber||''} ${s.fatherName||''} ${s.phone||''} ${s.whatsapp||''} ${s.aadhaarLast4||s.aadhaar||''}`.toLowerCase().includes(studentSearch.toLowerCase().trim()));
  const selectedStudent=students.find(s=>s.id===studentId && String(s.className||'').trim()===collectionClass);
  const activePayments=payments.filter(p=>p.status!=='cancelled');
@@ -214,6 +216,72 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
    setMessage(`Payment saved successfully. One combined receipt: ${receiptNo}`);
   }catch(e){setError(e.message);}
  };
+ const classOrder=['Nursery','LKG','UKG',...Array.from({length:10},(_,i)=>String(i+1))];
+ const nextClassOf=c=>{const i=classOrder.indexOf(String(c||'').trim());return i>=0&&i<classOrder.length-1?classOrder[i+1]:i===classOrder.length-1?'Passed Out':c;};
+ const currentSessionStart=Number(String(year).slice(0,4))||2026;
+ const suggestedNextSession=`${currentSessionStart+1}-${String(currentSessionStart+2).slice(-2)}`;
+ const activeForPromotion=students.filter(st=>!st.passedOut&&st.status!=='Passed Out'&&classOrder.includes(String(st.className||'').trim())&&String(st.sessionPromotion?.to||'')!==newSession);
+ const routeNames=[...new Set(students.map(st=>st.feeConfig?.vanRoute||st.vanRoute).filter(Boolean))].sort();
+ const writeInChunks=async operations=>{for(let i=0;i<operations.length;i+=400){const batch=writeBatch(db);operations.slice(i,i+400).forEach(op=>op(batch));await batch.commit();}};
+ const createNextSession=async()=>{
+  if(!/^\d{4}-\d{2}$/.test(newSession)||Number(newSession.slice(0,4))<=currentSessionStart)return setError('Enter a valid next session, for example 2027-28.');
+  if(!window.confirm(`Create ${newSession} and promote ${activeForPromotion.length} students? Class 10 students will be marked Passed Out. Old session records will be kept.`))return;
+  setSessionBusy(true);setError('');setMessage('');
+  try{
+   const oldStructures=structures.filter(x=>x.academicYear===year);
+   const newStructures=structures.filter(x=>x.academicYear===newSession);
+   const ops=[];
+   const sessionKey=`${schoolId}_${newSession}`.replace(/[^a-zA-Z0-9_-]/g,'_');
+   const sessionRef=doc(db,'academicSessions',sessionKey);
+   const existing=await getDoc(sessionRef);
+   if(existing.exists())throw new Error('This academic session already exists. Do not create it twice.');
+   oldStructures.forEach(old=>{
+    if(!newStructures.some(x=>x.className===old.className)){
+     const id=`${schoolId}_${newSession}_${old.className}`.replace(/[^a-zA-Z0-9_-]/g,'_');
+     ops.push(batch=>batch.set(doc(db,'feeStructures',id),{schoolId,className:old.className,monthlyFee:Number(old.monthlyFee||0),admissionFee:Number(old.admissionFee||0),vanFee:Number(old.vanFee||0),renewalFee:Number(old.renewalFee||0),examFee:Number(old.examFee||0),otherFee:Number(old.otherFee||0),academicYear:newSession,createdAt:serverTimestamp(),updatedAt:serverTimestamp()}));
+    }
+   });
+   activeForPromotion.forEach(st=>{
+    const promoted=nextClassOf(st.className);
+    const oldConfig=st.feeConfig||{};
+    const route=oldConfig.vanRoute||st.vanRoute||'';
+    const matchingOld=oldStructures.find(x=>x.className===promoted)||oldStructures.find(x=>x.className===st.className);
+    const newConfig={...oldConfig,academicYear:newSession,monthlySchoolFee:Number(matchingOld?.monthlyFee??oldConfig.monthlySchoolFee??st.monthlySchoolFee??0),monthlyVanFee:Number(oldConfig.monthlyVanFee??st.monthlyVanFee??matchingOld?.vanFee??0),vanRoute:route};
+    const isPassed=promoted==='Passed Out';
+    const historyId=`${schoolId}_${st.id}_${year}`.replace(/[^a-zA-Z0-9_-]/g,'_');
+    ops.push(batch=>batch.set(doc(db,'studentSessionHistory',historyId),{schoolId,studentId:st.id,studentName:st.name||'',admissionNo:st.admissionNo||'',className:st.className||'',academicYear:year,feeConfig:oldConfig,vanRoute:route,createdAt:serverTimestamp()}));
+    ops.push(batch=>batch.update(doc(db,'students',st.id),{className:promoted,passedOut:isPassed,status:isPassed?'Passed Out':'Active',academicYear:newSession,feeConfig:{...newConfig,academicYear:newSession},sessionPromotion:{from:year,to:newSession,fromClass:st.className||'',toClass:promoted,at:serverTimestamp()}}));
+   });
+   ops.push(batch=>batch.set(sessionRef,{schoolId,academicYear:newSession,previousSession:year,status:'Active',createdAt:serverTimestamp(),promotedCount:activeForPromotion.length,passedOutCount:activeForPromotion.filter(st=>String(st.className)==='10').length}));
+   await writeInChunks(ops);
+   setMessage(`${newSession} created. ${activeForPromotion.length} students promoted; Class 10 moved to Passed Out. Old session history retained.`);
+   setYear(newSession);setPromotionPreview(false);
+  }catch(e){setError(e.message||'Session creation failed.');}
+  finally{setSessionBusy(false);}
+ };
+ const bulkUpdateClassFee=async e=>{
+  e.preventDefault();if(year!==`${new Date().getFullYear()}-${String(new Date().getFullYear()+1).slice(-2)}`&&year!==suggestedNextSession)return setError('Bulk fee updates are allowed only for the current or next academic session. Old sessions are protected.');if(!feeUpdateClass||bulkSchoolFee===''||Number(bulkSchoolFee)<0)return setError('Select a class and enter the new monthly fee.');
+  const targets=students.filter(st=>String(st.className||'').trim()===feeUpdateClass&&!st.passedOut&&st.status!=='Passed Out');
+  if(!window.confirm(`Update Monthly School Fee for ${targets.length} students in Class ${feeUpdateClass} to ${money(bulkSchoolFee)} for ${year}? Previous session records will not be changed.`))return;
+  setSessionBusy(true);setError('');
+  try{
+   const old=structures.find(x=>x.className===feeUpdateClass&&x.academicYear===year);
+   const data={schoolId,className:feeUpdateClass,monthlyFee:Number(bulkSchoolFee),admissionFee:Number(old?.admissionFee||0),vanFee:Number(old?.vanFee||0),renewalFee:Number(old?.renewalFee||0),examFee:Number(old?.examFee||0),otherFee:Number(old?.otherFee||0),academicYear:year,updatedAt:serverTimestamp()};
+   if(old)await updateDoc(doc(db,'feeStructures',old.id),data);else await addDoc(collection(db,'feeStructures'),{...data,createdAt:serverTimestamp()});
+   const eligible=targets.filter(st=>String(st.feeConfig?.academicYear||st.academicYear||'')===year);const ops=eligible.map(st=>batch=>{const cfg=st.feeConfig||{};batch.update(doc(db,'students',st.id),{feeConfig:{...cfg,monthlySchoolFee:Number(bulkSchoolFee)}});});
+   await writeInChunks(ops);setMessage(`Class ${feeUpdateClass}: fee structure saved for ${year}; ${eligible.length} matching student fee records updated. If this is a new session, run promotion first, then apply the bulk update.`);setBulkSchoolFee('');
+  }catch(e){setError(e.message||'Class fee update failed.');}finally{setSessionBusy(false);}
+ };
+ const bulkUpdateRouteFee=async e=>{
+  e.preventDefault();if(year!==`${new Date().getFullYear()}-${String(new Date().getFullYear()+1).slice(-2)}`&&year!==suggestedNextSession)return setError('Bulk fee updates are allowed only for the current or next academic session. Old sessions are protected.');if(!feeUpdateRoute||bulkVanFee===''||Number(bulkVanFee)<0)return setError('Select a route and enter the new van fee.');
+  const targets=students.filter(st=>(st.feeConfig?.vanRoute||st.vanRoute)===feeUpdateRoute&&(st.feeConfig?.transportOpted===true||st.feeConfig?.transportOpted==='Yes'||st.transportOpted===true||st.transportOpted==='Yes')&&!st.passedOut&&st.status!=='Passed Out'&&String(st.feeConfig?.academicYear||st.academicYear||'')===year);
+  if(!window.confirm(`Update Van Fee for ${targets.length} students on route ${feeUpdateRoute} to ${money(bulkVanFee)} per month for ${year}? Previous session records will not be changed.`))return;
+  setSessionBusy(true);setError('');
+  try{
+   const ops=targets.map(st=>batch=>{const cfg=st.feeConfig||{};batch.update(doc(db,'students',st.id),{feeConfig:{...cfg,academicYear:year,monthlyVanFee:Number(bulkVanFee)}});});
+   await writeInChunks(ops);setMessage(`Route ${feeUpdateRoute}: ${targets.length} students updated for ${year}.`);setBulkVanFee('');
+  }catch(e){setError(e.message||'Route fee update failed.');}finally{setSessionBusy(false);}
+ };
  const saveStructure=async e=>{e.preventDefault();if(!schoolId||!className)return setError('Select class.');try{const old=structures.find(x=>x.className===className&&x.academicYear===year);const data={schoolId,className,monthlyFee:Number(monthlyFee||0),admissionFee:Number(admissionFee||0),vanFee:Number(vanFee||0),renewalFee:Number(renewalFee||0),examFee:Number(examFee||0),otherFee:Number(otherFee||0),academicYear:year,updatedAt:serverTimestamp()};if(old)await updateDoc(doc(db,'feeStructures',old.id),data);else await addDoc(collection(db,'feeStructures'),{...data,createdAt:serverTimestamp()});setMessage('Fee structure saved.');}catch(e){setError(e.message);}};
  const saveExpense=async e=>{e.preventDefault();try{await addDoc(collection(db,'schoolExpenses'),{schoolId,title:expenseTitle.trim(),amount:Number(expenseAmount),expenseDate,academicYear:year,createdAt:serverTimestamp()});setExpenseTitle('');setExpenseAmount('');setMessage('Expense saved.');}catch(e){setError(e.message);}};
  const saveDiscount=async e=>{e.preventDefault();const st=students.find(s=>s.id===discountStudent);if(!st)return setError('Select student.');try{await addDoc(collection(db,'feeDiscounts'),{schoolId,studentId:st.id,studentName:st.name||'',amount:Number(discountAmount),reason:discountReason,academicYear:year,createdAt:serverTimestamp()});setMessage('Discount saved.');setDiscountAmount('');setDiscountReason('');}catch(e){setError(e.message);}};
@@ -275,13 +343,16 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
    </>;
   }
 
-  if(active==='Fee Structure')return <><form onSubmit={saveStructure} style={formGrid}><label style={labelStyle}>Class<select style={inputStyle} required value={className} onChange={e=>setClassName(e.target.value)}><option value="">Select Class</option>{['Nursery','LKG','UKG',...Array.from({length:12},(_,i)=>String(i+1))].map(x=><option key={x}>{x}</option>)}</select></label>{[['Monthly School Fee',monthlyFee,setMonthlyFee],['Admission Fee',admissionFee,setAdmissionFee],['Monthly Van Fee',vanFee,setVanFee],['Renewal Fee',renewalFee,setRenewalFee],['Exam Fee (annual)',examFee,setExamFee],['Other Annual Fee',otherFee,setOtherFee]].map(([l,v,f])=><label key={l} style={labelStyle}>{l}<input style={inputStyle} type="number" min="0" value={v} onChange={e=>f(e.target.value)}/></label>)}<button style={primary}>Save Fee Structure</button></form>{renderTable(['Class','School / Month','Admission','Van / Month','Renewal','Exam','Other','Session'],structures.map(x=>[x.className,money(x.monthlyFee),money(x.admissionFee),money(x.vanFee),money(x.renewalFee),money(x.examFee),money(x.otherFee),x.academicYear]))}</>;
+  if(active==='Fee Structure')return <><h3>Current Session Fee Structure</h3><form onSubmit={saveStructure} style={formGrid}><label style={labelStyle}>Class<select style={inputStyle} required value={className} onChange={e=>setClassName(e.target.value)}><option value="">Select Class</option>{['Nursery','LKG','UKG',...Array.from({length:10},(_,i)=>String(i+1))].map(x=><option key={x}>{x}</option>)}</select></label>{[['Monthly School Fee',monthlyFee,setMonthlyFee],['Admission Fee',admissionFee,setAdmissionFee],['Monthly Van Fee',vanFee,setVanFee],['Renewal Fee',renewalFee,setRenewalFee],['Exam Fee (annual)',examFee,setExamFee],['Other Annual Fee',otherFee,setOtherFee]].map(([l,v,f])=><label key={l} style={labelStyle}>{l}<input style={inputStyle} type="number" min="0" value={v} onChange={e=>f(e.target.value)}/></label>)}<button style={primary}>Save Fee Structure</button></form>{renderTable(['Class','School / Month','Admission','Van / Month','Renewal','Exam','Other','Session'],structures.map(x=>[x.className,money(x.monthlyFee),money(x.admissionFee),money(x.vanFee),money(x.renewalFee),money(x.examFee),money(x.otherFee),x.academicYear]))}
+ <div style={{border:'1px solid #cbd5e1',borderRadius:12,padding:14,marginTop:18}}><h3 style={{marginTop:0}}>Annual Class-wise & Route-wise Fee Update</h3><p style={{fontSize:13,color:'#64748b'}}>Updates apply only to the selected session. Confirm before updating all matching students.</p><label style={labelStyle}>Academic Session<select style={inputStyle} value={year} onChange={e=>setYear(e.target.value)}>{[...new Set([year,...structures.map(x=>x.academicYear).filter(Boolean)])].sort().reverse().map(y=><option key={y}>{y}</option>)}</select></label><form onSubmit={bulkUpdateClassFee} style={formGrid}><label style={labelStyle}>Select Class<select style={inputStyle} value={feeUpdateClass} onChange={e=>setFeeUpdateClass(e.target.value)}><option value="">Select Class</option>{['Nursery','LKG','UKG',...Array.from({length:10},(_,i)=>String(i+1))].map(x=><option key={x}>{x}</option>)}</select></label><label style={labelStyle}>New Monthly School Fee<input style={inputStyle} type="number" min="0" value={bulkSchoolFee} onChange={e=>setBulkSchoolFee(e.target.value)} placeholder="Enter amount"/></label><button style={primary} disabled={sessionBusy}>Update All Students of Class</button></form><form onSubmit={bulkUpdateRouteFee} style={formGrid}><label style={labelStyle}>Select Van Route<select style={inputStyle} value={feeUpdateRoute} onChange={e=>setFeeUpdateRoute(e.target.value)}><option value="">Select Route</option>{routeNames.map(x=><option key={x}>{x}</option>)}</select></label><label style={labelStyle}>New Monthly Van Fee<input style={inputStyle} type="number" min="0" value={bulkVanFee} onChange={e=>setBulkVanFee(e.target.value)} placeholder="Enter amount"/></label><button style={primary} disabled={sessionBusy}>Update All Students of Route</button></form></div>
+ <div style={{border:'1px solid #cbd5e1',borderRadius:12,padding:14,marginTop:18}}><h3 style={{marginTop:0}}>Academic Session & Student Promotion</h3><p style={{fontSize:13,color:'#64748b'}}>Create next session once. Students move to the next class; Class 10 moves to Passed Out. Old session data is saved in studentSessionHistory.</p><label style={labelStyle}>New Academic Session<input style={inputStyle} value={newSession} onChange={e=>setNewSession(e.target.value)} placeholder={suggestedNextSession}/></label><button style={primary} disabled={sessionBusy} onClick={()=>setPromotionPreview(true)}>Preview Student Promotion</button>{promotionPreview&&<div style={{marginTop:12}}><b>Promotion Preview · {newSession}</b>{renderTable(['Current Class','Next Class','Students'],classOrder.map(c=>[c,nextClassOf(c),activeForPromotion.filter(st=>String(st.className).trim()===c).length]).filter(r=>r[2]>0))}<p style={{fontSize:13,color:'#b45309'}}>Class 10 students will be marked Passed Out. Review counts before confirming.</p><button style={{...primary,background:'#15803d'}} disabled={sessionBusy} onClick={createNextSession}>Confirm & Create New Session</button><button style={secondary} onClick={()=>setPromotionPreview(false)}>Cancel</button></div>}</div>
+ <div style={{border:'1px solid #cbd5e1',borderRadius:12,padding:14,marginTop:18}}><h3 style={{marginTop:0}}>Passed Out Students</h3><p style={{fontSize:13,color:'#64748b'}}>Class 10 students moved out during session promotion are stored separately here. Their historical student and fee records remain preserved.</p>{renderTable(['Student','Admission No.','Last Class','Passed Out Session'],students.filter(st=>st.passedOut||st.status==='Passed Out').map(st=>[st.name,st.admissionNo,st.sessionPromotion?.fromClass||'10',st.sessionPromotion?.to||'Passed Out']))}</div></>;
   if(active==='Fee Dues'){
    const normalize=value=>String(value??'').toLowerCase().replace(/\s+/g,' ').trim();
    const digits=value=>String(value??'').replace(/\D/g,'');
    const queryText=normalize(search);
    const queryDigits=digits(search);
-   const yearStudents=students.filter(st=>duesClass==='All Classes'||String(st.className||'').trim()===String(duesClass).trim());
+   const yearStudents=students.filter(st=>!st.passedOut&&st.status!=='Passed Out'&&(duesClass==='All Classes'||String(st.className||'').trim()===String(duesClass).trim()));
    const searched=yearStudents.filter(st=>{
     const textFields=[st.name,st.admissionNo,st.penNumber,st.fatherName,st.phone,st.whatsapp,st.rollNo,st.rollNumber,st.aadhaarLast4,st.aadhaar];
     const textMatch=textFields.some(value=>normalize(value).includes(queryText));
