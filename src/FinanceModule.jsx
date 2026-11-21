@@ -47,28 +47,28 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
  const paidMonthsFor=(sid,type,session)=>activePayments.filter(p=>p.studentId===sid&&p.feeType===type&&p.academicYear===session).flatMap(p=>String(p.months||'').split(',').map(x=>x.trim()).filter(Boolean));
  const monthsDueThrough=(session,student)=>{
   const start=Number(String(session).slice(0,4));
-  const admissionDate=student.admissionDate||student.admissionOn||student.joiningDate||'';
-  const admissionYear=admissionDate?Number(String(admissionDate).slice(0,4)):start;
-  const admissionMonth=admissionDate?Number(String(admissionDate).slice(5,7)):4;
   const now=new Date();
   const sessionEnd=new Date(start+1,2,31,23,59,59);
   const cutoff=now>sessionEnd?12:now<new Date(start,3,1)?0:Math.min(12,Math.max(0,(now.getFullYear()-start)*12+now.getMonth()-3+1));
-  return monthNames.slice(0,cutoff).filter((_,i)=>{const monthDate=new Date(start,3+i,1);return monthDate>=new Date(admissionYear,admissionMonth-1,1);});
+  return monthNames.slice(0,cutoff);
  };
  const feeDueDetails=(st,session=year)=>{
+  const saved=st.feeConfig||{};
   const structure=structures.find(x=>x.className===st.className&&x.academicYear===session);
-  if(!structure)return {lines:[],totals:{},grand:0,missingStructure:true};
+  const matchesSaved=String(saved.academicYear||st.academicYear||'')===String(session);
+  const feeSource=matchesSaved?{monthlyFee:saved.monthlySchoolFee,vanFee:saved.transportOpted?saved.monthlyVanFee:0,admissionFee:saved.admissionType==='New Admission'?saved.admissionFee:0,renewalFee:saved.admissionType==='Renewal'?saved.admissionFee:0,examFee:saved.examFee,otherFee:saved.otherFeeAmount,otherFeeName:saved.otherFeeName,admissionFeeStatus:saved.admissionFeeStatus,examFeeStatus:saved.examFeeStatus}:structure;
+  if(!feeSource)return {lines:[],totals:{},grand:0,missingStructure:true};
   const dueMonths=monthsDueThrough(session,st);
   const paidFor=(type)=>activePayments.filter(p=>p.studentId===st.id&&p.academicYear===session&&p.feeType===type);
   const paidMonthSet=(type)=>new Set(paidFor(type).flatMap(p=>String(p.months||'').split(',').map(x=>x.trim()).filter(Boolean)));
   const lines=[];
   const addMonthly=(type,label,rate)=>{const paidSet=paidMonthSet(type);dueMonths.forEach(m=>{if(!paidSet.has(m)&&Number(rate||0)>0)lines.push({month:m,type:label,amount:Number(rate||0)});});};
-  addMonthly('Monthly School Fee','School Fee',structure.monthlyFee);
-  addMonthly('Monthly Van Fee','Van Fee',structure.vanFee);
+  addMonthly('Monthly School Fee','School Fee',feeSource.monthlyFee);
+  addMonthly('Monthly Van Fee','Van Fee',feeSource.vanFee);
   const admissionDate=st.admissionDate||st.admissionOn||st.joiningDate||'';
   const admissionSession=admissionDate?`${String(admissionDate).slice(0,4)}-${String(Number(String(admissionDate).slice(0,4))+1).slice(-2)}`:session;
-  const oneTime=[['Admission Fee','Admission Fee',admissionSession===session?structure.admissionFee:0],['Renewal Fee','Renewal Fee',structure.renewalFee],['Exam Fee','Exam Fee',structure.examFee],['Other Fee','Other Fee',structure.otherFee]];
-  oneTime.forEach(([type,label,charge])=>{const total=Number(charge||0);if(total<=0)return;const paid=paidFor(type).reduce((a,p)=>a+Number(p.amount||0),0);const due=Math.max(0,total-paid);if(due>0)lines.push({month:'Annual / One-time',type:label,amount:due});});
+  const oneTime=[['Admission Fee','Admission Fee',admissionSession===session&&feeSource.admissionFeeStatus!=='Paid'?feeSource.admissionFee:0],['Renewal Fee','Renewal Fee',feeSource.admissionFeeStatus!=='Paid'?feeSource.renewalFee:0],['Exam Fee','Exam Fee',feeSource.examFeeStatus==='Paid'?0:feeSource.examFee],['Other Fee','Other Fee',feeSource.otherFee]];
+  oneTime.forEach(([type,label,charge])=>{const total=Number(charge||0);if(total<=0)return;const paid=paidFor(type).reduce((a,p)=>a+Number(p.amount||0),0);const due=Math.max(0,total-paid);if(due>0)lines.push({month:'Annual / One-time',type:label==='Other Fee'?(feeSource.otherFeeName||label):label,amount:due});});
   const totals={};lines.forEach(x=>totals[x.type]=(totals[x.type]||0)+x.amount);
   return {lines,totals,grand:lines.reduce((a,x)=>a+x.amount,0),missingStructure:false};
  };
@@ -143,24 +143,43 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
 
   if(active==='Fee Structure')return <><form onSubmit={saveStructure} style={formGrid}><label style={labelStyle}>Class<select style={inputStyle} required value={className} onChange={e=>setClassName(e.target.value)}><option value="">Select Class</option>{['Nursery','LKG','UKG',...Array.from({length:12},(_,i)=>String(i+1))].map(x=><option key={x}>{x}</option>)}</select></label>{[['Monthly School Fee',monthlyFee,setMonthlyFee],['Admission Fee',admissionFee,setAdmissionFee],['Monthly Van Fee',vanFee,setVanFee],['Renewal Fee',renewalFee,setRenewalFee],['Exam Fee (annual)',examFee,setExamFee],['Other Annual Fee',otherFee,setOtherFee]].map(([l,v,f])=><label key={l} style={labelStyle}>{l}<input style={inputStyle} type="number" min="0" value={v} onChange={e=>f(e.target.value)}/></label>)}<button style={primary}>Save Fee Structure</button></form>{renderTable(['Class','School / Month','Admission','Van / Month','Renewal','Exam','Other','Session'],structures.map(x=>[x.className,money(x.monthlyFee),money(x.admissionFee),money(x.vanFee),money(x.renewalFee),money(x.examFee),money(x.otherFee),x.academicYear]))}</>;
   if(active==='Fee Dues'){
-   const yearStudents=students.filter(st=>duesClass==='All Classes'||st.className===duesClass);
-   const searched=yearStudents.filter(st=>`${st.name||''} ${st.admissionNo||''} ${st.penNumber||''} ${st.fatherName||''} ${st.phone||''} ${st.whatsapp||''} ${st.aadhaarLast4||st.aadhaar||''} ${st.rollNo||st.rollNumber||''}`.toLowerCase().includes(search.toLowerCase().trim()));
-   const dueStudents=searched.map(st=>({student:st,detail:feeDueDetails(st)})).filter(x=>x.detail.grand>0);
-   const monthFiltered=duesMonth==='All Months'?dueStudents:dueStudents.map(x=>({...x,detail:{...x.detail,lines:x.detail.lines.filter(l=>l.month===duesMonth||l.month==='Annual / One-time')}})).map(x=>({...x,detail:{...x.detail,totals:x.detail.lines.reduce((a,l)=>({...a,[l.type]:(a[l.type]||0)+l.amount}),{}),grand:x.detail.lines.reduce((a,l)=>a+l.amount,0)}})).filter(x=>x.detail.grand>0);
+   const normalize=value=>String(value??'').toLowerCase().replace(/\s+/g,' ').trim();
+   const digits=value=>String(value??'').replace(/\D/g,'');
+   const queryText=normalize(search);
+   const queryDigits=digits(search);
+   const yearStudents=students.filter(st=>duesClass==='All Classes'||String(st.className||'').trim()===String(duesClass).trim());
+   const searched=yearStudents.filter(st=>{
+    const textFields=[st.name,st.admissionNo,st.penNumber,st.fatherName,st.phone,st.whatsapp,st.rollNo,st.rollNumber,st.aadhaarLast4,st.aadhaar];
+    const textMatch=textFields.some(value=>normalize(value).includes(queryText));
+    const aadhaarDigits=digits(st.aadhaarLast4||st.aadhaar||'');
+    const phoneDigits=digits(st.phone||st.whatsapp||'');
+    const numericMatch=!!queryDigits&&(aadhaarDigits.includes(queryDigits)||phoneDigits.includes(queryDigits)||digits(st.admissionNo).includes(queryDigits)||digits(st.rollNo||st.rollNumber).includes(queryDigits));
+    return !queryText||textMatch||numericMatch;
+   });
+   const allStudentRows=searched.map(st=>({student:st,detail:feeDueDetails(st,year)}));
+   const monthFiltered=allStudentRows.map(x=>{
+    const lines=duesMonth==='All Months'?x.detail.lines:x.detail.lines.filter(l=>l.month===duesMonth||l.month==='Annual / One-time');
+    const totals={};lines.forEach(l=>totals[l.type]=(totals[l.type]||0)+Number(l.amount||0));
+    return {...x,detail:{...x.detail,lines,totals,grand:lines.reduce((a,l)=>a+Number(l.amount||0),0)}};
+   });
    const chosen=students.find(st=>st.id===duesStudentId);
-   const chosenDetail=chosen?feeDueDetails(chosen):null;
-   const classSummary=collectionClasses.map(c=>{const list=students.filter(st=>st.className===c).map(st=>({st,d:feeDueDetails(st)})).map(x=>({...x,d:{...x.d,lines:duesMonth==='All Months'?x.d.lines:x.d.lines.filter(l=>l.month===duesMonth||l.month==='Annual / One-time')}})).map(x=>({...x,d:{...x.d,grand:x.d.lines.reduce((a,l)=>a+l.amount,0)}})).filter(x=>x.d.grand>0);return {className:c,count:list.length,total:list.reduce((a,x)=>a+x.d.grand,0)};}).filter(x=>x.count>0);
+   const chosenDetail=chosen?feeDueDetails(chosen,year):null;
+   const classSummary=collectionClasses.map(c=>{
+    const list=students.filter(st=>String(st.className||'').trim()===String(c).trim()).map(st=>({st,d:feeDueDetails(st,year)}));
+    const due=list.filter(x=>x.d.grand>0);
+    return {className:c,totalStudents:list.length,count:due.length,total:due.reduce((a,x)=>a+x.d.grand,0)};
+   }).filter(x=>x.totalStudents>0);
    return <div style={{display:'grid',gap:14}}>
     <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:10}}>
      <label style={labelStyle}>Academic Year<select style={inputStyle} value={year} onChange={e=>{setYear(e.target.value);setDuesStudentId('');}}>{['2026-27','2025-26','2024-25','2023-24'].map(x=><option key={x}>{x}</option>)}</select></label>
      <label style={labelStyle}>Class<select style={inputStyle} value={duesClass} onChange={e=>{setDuesClass(e.target.value);setDuesStudentId('');}}><option>All Classes</option>{collectionClasses.map(c=><option key={c}>{c}</option>)}</select></label>
      <label style={labelStyle}>Month<select style={inputStyle} value={duesMonth} onChange={e=>setDuesMonth(e.target.value)}><option>All Months</option>{monthNames.map(m=><option key={m}>{m}</option>)}</select></label>
     </div>
-    <input style={inputStyle} placeholder="Search Name / Mobile / Aadhaar Last 4 Digits / Admission No. / Roll No. / Father Name" value={search} onChange={e=>setSearch(e.target.value)}/>
-    <div className="finance-card"><h3 style={{marginTop:0}}>Class-wise Pending Summary · {year}</h3>{renderTable(['Class','Students with Due','Total Pending'],classSummary.map(x=>[<button style={secondary} onClick={()=>{setDuesClass(x.className);setDuesStudentId('');}}>{x.className}</button>,x.count,money(x.total)]))}</div>
-    <div className="finance-card"><h3 style={{marginTop:0}}>Student-wise Pending · {duesMonth}</h3><p className="muted">किसी विद्यार्थी को चुनकर उसकी पूरी साल की फीस हिस्ट्री देखें।</p>{renderTable(['Student','Class','Father','Mobile','Pending','Details'],monthFiltered.map(x=>[x.student.name,x.student.className,x.student.fatherName||'—',x.student.phone||x.student.whatsapp||'—',money(x.detail.grand),<button style={primary} onClick={()=>setDuesStudentId(x.student.id)}>View Details</button>]))}</div>
-    {chosen&&chosenDetail&&<div className="finance-card"><div style={{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}><div><h3 style={{margin:'0 0 5px'}}>{chosen.name}</h3><div className="muted">{chosen.className} · Father: {chosen.fatherName||'—'} · Mobile: {chosen.phone||chosen.whatsapp||'—'}</div></div><button style={secondary} onClick={()=>setDuesStudentId('')}>Close</button></div><label style={{...labelStyle,marginTop:14}}>Academic Year<select style={inputStyle} value={year} onChange={e=>setYear(e.target.value)}>{['2026-27','2025-26','2024-25','2023-24'].map(x=><option key={x}>{x}</option>)}</select></label><h4>Month-wise Pending Fees</h4>{renderTable(['Month','Fee Name','Pending Amount'],chosenDetail.lines.map(l=>[l.month,l.type,money(l.amount)]))}<h4>Category-wise Total</h4>{renderTable(['Fee Category','Total Pending'],Object.entries(chosenDetail.totals).map(([k,v])=>[k,money(v)]))}<div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:12,padding:12,background:'#fff1f2',borderRadius:8}}><b>Grand Total Due</b><strong style={{fontSize:22,color:'#be123c'}}>{money(chosenDetail.grand)}</strong></div></div>}
-    <p className="muted">Automatic dues use the selected session's saved Fee Structure and recorded payments. Monthly School/Van fees are calculated from April or the student's recorded admission date through the current month. One-time fees are included only when an amount is configured in Fee Structure. Aadhaar search works only if an Aadhaar field already exists in the student record; full Aadhaar should be masked and protected.</p>
+    <input style={inputStyle} placeholder="Search Name / Mobile / Aadhaar Last 4 Digits / Admission No. / Roll No. / PEN / Father Name" value={search} onChange={e=>setSearch(e.target.value)}/>
+    <div className="finance-card"><h3 style={{marginTop:0}}>Class-wise Pending Summary · {year}</h3>{renderTable(['Class','Total Students','Students with Due','Total Pending'],classSummary.map(x=>[<button style={secondary} onClick={()=>{setDuesClass(x.className);setDuesStudentId('');}}>{x.className}</button>,x.totalStudents,x.count,money(x.total)]))}</div>
+    <div className="finance-card"><h3 style={{marginTop:0}}>Student-wise Fee Status · {duesMonth}</h3><p className="muted">चुने हुए विद्यार्थी को खोलकर उसकी पूरी साल की फीस हिस्ट्री देखें। सभी विद्यार्थी दिखाई देंगे—फीस बाकी हो या पूरी जमा हो।</p>{renderTable(['Student','Class','Father','Mobile','Fee Status','Pending','Details'],monthFiltered.map(x=>[x.student.name||'—',x.student.className||'—',x.student.fatherName||'—',x.student.phone||x.student.whatsapp||'—',x.detail.missingStructure?<span style={{color:'#b45309',fontWeight:700}}>Fee Setup Missing</span>:x.detail.grand>0?<span style={{color:'#b91c1c',fontWeight:700}}>Pending</span>:<span style={{color:'#15803d',fontWeight:700}}>Fully Paid</span>,money(x.detail.grand),<button style={primary} onClick={()=>setDuesStudentId(x.student.id)}>View Details</button>]))}</div>
+    {chosen&&chosenDetail&&<div className="finance-card"><div style={{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}><div><h3 style={{margin:'0 0 5px'}}>{chosen.name}</h3><div className="muted">{chosen.className} · Father: {chosen.fatherName||'—'} · Mobile: {chosen.phone||chosen.whatsapp||'—'}</div></div><button style={secondary} onClick={()=>setDuesStudentId('')}>Close</button></div><label style={{...labelStyle,marginTop:14}}>Academic Year<select style={inputStyle} value={year} onChange={e=>setYear(e.target.value)}>{['2026-27','2025-26','2024-25','2023-24'].map(x=><option key={x}>{x}</option>)}</select></label>{chosenDetail.missingStructure?<p style={{color:'#b45309',fontWeight:700}}>Fee Setup Missing for {year}. Please check this student's Admission Form Fee Setup or add a Fee Structure for this class and academic year.</p>:<><h4>Month-wise Pending Fees</h4>{renderTable(['Month','Fee Name','Pending Amount'],chosenDetail.lines.map(l=>[l.month,l.type,money(l.amount)]))}{chosenDetail.grand===0&&<p style={{color:'#15803d',fontWeight:700}}>No pending fee. This student is Fully Paid for the selected session.</p>}<h4>Category-wise Total</h4>{renderTable(['Fee Category','Total Pending'],Object.entries(chosenDetail.totals).map(([k,v])=>[k,money(v)]))}<div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:12,padding:12,background:'#fff1f2',borderRadius:8}}><b>Grand Total Due</b><strong style={{fontSize:22,color:chosenDetail.grand>0?'#be123c':'#15803d'}}>{money(chosenDetail.grand)}</strong></div></>}</div>}
+    <p className="muted">Automatic dues use the selected session's saved student Fee Setup first, then the class Fee Structure as fallback. Monthly School/Van fees are calculated from April through the current month. One-time fees are included only when configured. Aadhaar search uses the stored Aadhaar field or last four digits; keep full Aadhaar masked and protected.</p>
    </div>;
   }
   if(active==='Student Ledger')return <><label style={labelStyle}>Select Student<select style={inputStyle} value={studentId} onChange={e=>setStudentId(e.target.value)}><option value="">Select Student</option>{students.map(s=><option value={s.id}>{s.name} · {s.className}</option>)}</select></label>{studentId&&<>{renderTable(['Date','Fee Type','Amount','Mode','Receipt'],studentPayments.map(p=>[p.paymentDate,p.feeType,money(p.amount),p.paymentMode,p.receiptNo]))}<b>Total Paid: {money(studentPaid)}</b>{actions('Student Ledger',table(['Date','Fee Type','Amount','Mode','Receipt'],studentPayments.map(p=>[p.paymentDate,p.feeType,money(p.amount),p.paymentMode,p.receiptNo])))}</>}</>;
