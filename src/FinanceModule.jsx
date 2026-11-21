@@ -1,13 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { addDoc, collection, doc, onSnapshot, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import { db } from './firebase';
-const FINANCE_PANELS=['Fee Collection','Fee Structure','Fee Dues','Student Ledger','Fee Receipts','Discount & Scholarship','Expenses','Financial Reports'];
 const money=n=>'₹'+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2});
 const inputStyle={width:'100%',padding:11,border:'1px solid #cbd5e1',borderRadius:8,boxSizing:'border-box',fontSize:14,background:'#fff'};
 const labelStyle={display:'block',fontWeight:600,fontSize:13,color:'#334155',marginBottom:6};
 const primary={background:'#2457d6',color:'#fff',border:0,borderRadius:8,padding:'10px 15px',fontWeight:700,cursor:'pointer'};
 const secondary={background:'#eef2ff',color:'#1e40af',border:0,borderRadius:8,padding:'10px 13px',fontWeight:600,cursor:'pointer'};
-export default function FinanceModule({active,schoolId,schoolName,students,profile}){
+export default function FinanceModule({active,schoolId,schoolName,students,profile,onBack}){
  const [payments,setPayments]=useState([]),[structures,setStructures]=useState([]),[discounts,setDiscounts]=useState([]),[expenses,setExpenses]=useState([]);
  const [loading,setLoading]=useState(true),[error,setError]=useState(''),[message,setMessage]=useState('');
  const [search,setSearch]=useState(''),[year,setYear]=useState('2026-27'),[studentId,setStudentId]=useState(''),[feeType,setFeeType]=useState('Monthly School Fee'),[amount,setAmount]=useState(''),[paymentDate,setPaymentDate]=useState(new Date().toISOString().slice(0,10)),[method,setMethod]=useState('Cash'),[months,setMonths]=useState([]),[notes,setNotes]=useState('');
@@ -66,5 +65,5 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
  const formGrid={display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:12,alignItems:'end',margin:'14px 0'};
  const statsGrid={display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:10,margin:'14px 0'};
  if(!schoolId)return <section className="workspace"><h2>{active}</h2><p>Please select one school from the top menu to manage its finance records.</p></section>;
- return <section className="workspace"><button className="back" onClick={()=>window.dispatchEvent(new CustomEvent('smp-back-dashboard'))}>← Dashboard</button><div className="section-head"><div><h2>{active}</h2><p>{schoolName} · Academic Session {year}</p></div><span>{loading?'Loading…':''}</span></div><div style={{display:'flex',gap:7,flexWrap:'wrap',margin:'12px 0'}}>{FINANCE_PANELS.map(n=><button key={n} style={active===n?primary:secondary} onClick={()=>window.dispatchEvent(new CustomEvent('smp-open-finance',{detail:n}))}>{n}</button>)}</div>{error&&<p style={{color:'#b91c1c',background:'#fee2e2',padding:10,borderRadius:8}}>{error}</p>}{message&&<p style={{color:'#166534',background:'#dcfce7',padding:10,borderRadius:8}}>{message}</p>}{panelBody()}{['Fee Collection','Fee Structure','Fee Dues','Discount & Scholarship','Expenses'].includes(active)&&actions(active,table(['Student / Item','Details','Amount'],active==='Fee Collection'?activePayments.map(p=>[p.studentName,`${p.feeType} · ${p.paymentDate}`,money(p.amount)]):active==='Fee Structure'?structures.map(x=>[x.className,`Monthly ${money(x.monthlyFee)} · Admission ${money(x.admissionFee)}`,money(x.monthlyFee)]):active==='Fee Dues'?students.map(st=>[st.name,st.className,studentDue(st)===null?'Set Fee Structure':money(studentDue(st))]):active==='Discount & Scholarship'?discounts.map(x=>[x.studentName,x.reason,money(x.amount)]):expenses.map(x=>[x.title,x.expenseDate,money(x.amount)])))} </section>;
+ return <section className="workspace"><button className="back" onClick={onBack||(()=>window.dispatchEvent(new CustomEvent('smp-back-dashboard')))}>← Dashboard</button><div className="section-head"><div><h2>{active}</h2><p>{schoolName} · Academic Session {year}</p></div><span>{loading?'Loading…':''}</span></div>{error&&<p style={{color:'#b91c1c',background:'#fee2e2',padding:10,borderRadius:8}}>{error}</p>}{message&&<p style={{color:'#166534',background:'#dcfce7',padding:10,borderRadius:8}}>{message}</p>}{panelBody()}</section>;
 }
