@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   onAuthStateChanged, signInWithEmailAndPassword, signOut,
-  createUserWithEmailAndPassword
+  createUserWithEmailAndPassword, sendPasswordResetEmail
 } from 'firebase/auth';
 import {
   addDoc, collection, deleteDoc, doc, getDoc, getDocs, getCountFromServer, onSnapshot, setDoc,
@@ -28,7 +28,7 @@ const friendly=e=>e?.code==='auth/email-already-in-use'?'This email is already r
 
 export default function App(){
  const [user,setUser]=useState(null),[profile,setProfile]=useState(null),[checking,setChecking]=useState(true);
- const [email,setEmail]=useState(''),[password,setPassword]=useState(''),[authError,setAuthError]=useState(''),[loginLoading,setLoginLoading]=useState(false),[showRegister,setShowRegister]=useState(false);
+ const [email,setEmail]=useState(''),[password,setPassword]=useState(''),[authError,setAuthError]=useState(''),[loginLoading,setLoginLoading]=useState(false),[showRegister,setShowRegister]=useState(false),[forgotMode,setForgotMode]=useState(false);
  const [reg,setReg]=useState({schoolName:'',schoolCode:'',address:'',adminName:'',email:'',phone:'',password:''});
  const [active,setActive]=useState('Dashboard'),[queryText,setQueryText]=useState(''),[school,setSchool]=useState('All Schools');
  const [schools,setSchools]=useState([{id:'legacy-ips',name:'Iqra Public School',code:'IPS001',city:'Gadayipur, Mauaima, Prayagraj',status:'Active',legacy:true},{id:'legacy-ips2',name:'ips2',code:'IPS002',city:'',status:'Active',legacy:true}]);
@@ -39,8 +39,6 @@ export default function App(){
  const [schoolForm,setSchoolForm]=useState({name:'',code:'',city:''}),[showAddSchool,setShowAddSchool]=useState(false);
  const registrationInProgress=useRef(false);
  const [schoolAction,setSchoolAction]=useState(null),[typedSchoolName,setTypedSchoolName]=useState(''),[schoolActionBusy,setSchoolActionBusy]=useState(false);
- const [profileRequests,setProfileRequests]=useState([]),[myProfileRequests,setMyProfileRequests]=useState([]),[profileRequestLoading,setProfileRequestLoading]=useState(false);
- const [profileEdit,setProfileEdit]=useState({name:'',city:'',phone:'',adminName:''}),[profileRequestBusy,setProfileRequestBusy]=useState(false);
 
  useEffect(()=>onAuthStateChanged(auth,async current=>{
   if(registrationInProgress.current){setChecking(false);return;}
@@ -80,20 +78,6 @@ export default function App(){
  },[user,profile]);
 
  useEffect(()=>{
-  if(!user||profile?.role!=='superadmin')return;
-  return onSnapshot(query(collection(db,'schoolProfileUpdateRequests'),where('status','==','Pending')),snap=>{
-   setProfileRequests(snap.docs.map(d=>({id:d.id,...d.data()})));
-  },e=>setAuthError('Profile requests load error: '+e.message));
- },[user,profile]);
-
- useEffect(()=>{
-  if(!user||profile?.role!=='schooladmin'||!profile?.schoolId)return;
-  return onSnapshot(query(collection(db,'schoolProfileUpdateRequests'),where('schoolId','==',profile.schoolId),where('ownerUid','==',user.uid)),snap=>{
-   setMyProfileRequests(snap.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0)));
-  },e=>setAuthError('Your profile requests could not be loaded: '+e.message));
- },[user,profile]);
-
- useEffect(()=>{
   if(!user||!profile)return;
   // Never combine student records from different schools in the student workspace.
   if(profile.role==='superadmin'&&school==='All Schools'){
@@ -127,6 +111,7 @@ export default function App(){
  },[user,profile,schools]);
 
  const handleLogin=async e=>{e.preventDefault();setAuthError('');setLoginLoading(true);try{await signInWithEmailAndPassword(auth,email.trim(),password);}catch(e){setAuthError(friendly(e));}finally{setLoginLoading(false);}};
+ const handleForgotPassword=async e=>{e.preventDefault();setAuthError('');if(!email.trim()){setAuthError('Please enter your registered email address.');return;}setLoginLoading(true);try{await sendPasswordResetEmail(auth,email.trim().toLowerCase());setAuthError('Password reset link sent. Please check your email inbox and spam folder.');}catch(e){setAuthError(e?.code==='auth/user-not-found'?'No account was found with this email address.':e?.code==='auth/invalid-email'?'Please enter a valid email address.':friendly(e));}finally{setLoginLoading(false);}};
  const handleRegister=async e=>{
   e.preventDefault();setAuthError('');setLoginLoading(true);registrationInProgress.current=true;
   let created=null;
@@ -171,31 +156,6 @@ export default function App(){
  };
  const removeStudent=async s=>{if(!window.confirm(`Delete ${s.name}'s record?`))return;try{await deleteDoc(doc(db,'students',s.id));}catch(e){setStudentError('Delete failed: '+friendly(e));}};
  const approveSchool=async s=>{try{await updateDoc(doc(db,'schools',s.id),{status:'Active',approvedAt:serverTimestamp(),updatedAt:serverTimestamp()});}catch(e){setAuthError(friendly(e));}};
- const submitProfileUpdate=async e=>{
-  e.preventDefault();if(!profile?.schoolId||!user)return;
-  const current=schools.find(s=>s.id===profile.schoolId)||mySchool||{};
-  const proposed={name:profileEdit.name.trim(),city:profileEdit.city.trim(),phone:profileEdit.phone.trim(),adminName:profileEdit.adminName.trim()};
-  if(!proposed.name||!proposed.phone||!proposed.adminName){alert('School Name, Mobile Number and Owner/Admin Name are required.');return;}
-  const changed=Object.keys(proposed).some(k=>(current[k]||'')!==proposed[k]);
-  if(!changed){alert('No changes found.');return;}
-  setProfileRequestBusy(true);
-  try{
-   const pending=myProfileRequests.find(r=>r.status==='Pending');
-   if(pending)throw new Error('A profile update request is already pending. Wait for Super Admin approval.');
-   await addDoc(collection(db,'schoolProfileUpdateRequests'),{schoolId:profile.schoolId,schoolName:current.name||profile.schoolName||'',ownerUid:user.uid,requestedBy:user.uid,proposed,previous:{name:current.name||'',city:current.city||'',phone:current.phone||'',adminName:current.adminName||''},status:'Pending',createdAt:serverTimestamp()});
-   alert('Profile update request submitted. Changes will apply only after Super Admin approval.');
-  }catch(err){setAuthError('Request failed: '+friendly(err));}
-  finally{setProfileRequestBusy(false);}
- };
- const decideProfileRequest=async(r,decision)=>{
-  if(!isSuper)return;
-  try{
-   if(decision==='Approved'){
-    await updateDoc(doc(db,'schools',r.schoolId),{...r.proposed,updatedAt:serverTimestamp(),profileUpdatedAt:serverTimestamp()});
-   }
-   await updateDoc(doc(db,'schoolProfileUpdateRequests',r.id),{status:decision,reviewedBy:user.uid,reviewedAt:serverTimestamp()});
-  }catch(err){setAuthError('Could not '+decision.toLowerCase()+' request: '+friendly(err));}
- };
  const holdSchool=async s=>{setSchoolAction({school:s,action:'hold'});setTypedSchoolName('');};
  const restoreSchool=async s=>{setSchoolAction({school:s,action:'restore'});setTypedSchoolName('');};
  const archiveSchool=async s=>{setSchoolAction({school:s,action:'archive'});setTypedSchoolName('');};
@@ -230,19 +190,23 @@ export default function App(){
  const filteredStudents=students.filter(s=>`${s.name||''} ${s.admissionNo||''} ${s.penNumber||''} ${s.fatherName||''} ${s.phone||''} ${s.aadhaarLast4||''}`.toLowerCase().includes(studentSearch.toLowerCase())&&(studentClassFilter==='All Classes'||s.className===studentClassFilter));
  const classes=[...new Set(students.map(s=>s.className).filter(Boolean))];
  if(checking)return <div style={styles.center}><div style={styles.loginCard}><h2>🏫 School Manager Pro</h2><p>Checking account...</p></div></div>;
- if(!user)return <div style={styles.center}><form style={styles.loginCard} onSubmit={showRegister?handleRegister:handleLogin}>
+ if(!user)return <div style={styles.center}><form style={styles.loginCard} onSubmit={showRegister?handleRegister:forgotMode?handleForgotPassword:handleLogin}>
   <div style={{fontSize:44,textAlign:'center'}}>🏫</div><h1 style={{textAlign:'center',marginBottom:5}}>School Manager Pro</h1>
-  <p style={{textAlign:'center',color:'#64748b'}}>{showRegister?'Register Your School':'Secure Login'}</p>
+  <p style={{textAlign:'center',color:'#64748b'}}>{showRegister?'Register Your School':forgotMode?'Reset Your Password':'Secure Login'}</p>
   {showRegister?<>
+
    {Object.entries({schoolName:'School Name',schoolCode:'School Code',address:'School Address',adminName:'Owner / Admin Name',email:'Email Address',phone:'Mobile Number',password:'Create Password'}).map(([k,l])=><label key={k} style={styles.label}>{l}<input required style={styles.loginInput} type={k==='email'?'email':k==='password'?'password':'text'} value={reg[k]} onChange={e=>setReg({...reg,[k]:e.target.value})} minLength={k==='password'?6:undefined}/></label>)}
    <p style={{fontSize:12,color:'#64748b'}}>Registration will be sent to Super Admin for approval.</p>
   </>:<>
-   <label style={styles.label}>Email Address</label><input style={styles.loginInput} type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="Enter email"/>
-   <label style={styles.label}>Password</label><input style={styles.loginInput} type="password" required value={password} onChange={e=>setPassword(e.target.value)} placeholder="Enter password"/>
+   <label style={styles.label}>Email Address</label><input style={styles.loginInput} type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="Enter registered email"/>
+   {!forgotMode&&<><label style={styles.label}>Password</label><input style={styles.loginInput} type="password" required value={password} onChange={e=>setPassword(e.target.value)} placeholder="Enter password"/></>}
+   {forgotMode&&<p style={{fontSize:13,color:'#64748b',lineHeight:1.5}}>We will email a secure password reset link to the registered email address. This works for School Admin and Super Admin accounts.</p>}
   </>}
   {authError&&<p style={styles.error}>{authError}</p>}
-  <button type="submit" disabled={loginLoading} style={styles.loginButton}>{loginLoading?'Please wait...':showRegister?'Submit Registration':'Login'}</button>
-  <button type="button" style={{...secondary,width:'100%',marginTop:10}} onClick={()=>{setShowRegister(!showRegister);setAuthError('');}}>{showRegister?'Already registered? Login':'Register New School'}</button>
+  <button type="submit" disabled={loginLoading} style={styles.loginButton}>{loginLoading?'Please wait...':showRegister?'Submit Registration':forgotMode?'Send Reset Link':'Login'}</button>
+  {!showRegister&&!forgotMode&&<button type="button" style={{...secondary,width:'100%',marginTop:10}} onClick={()=>{setForgotMode(true);setAuthError('');}}>Forgot Password?</button>}
+  {forgotMode&&<button type="button" style={{...secondary,width:'100%',marginTop:10}} onClick={()=>{setForgotMode(false);setAuthError('');}}>Back to Login</button>}
+  {!forgotMode&&<button type="button" style={{...secondary,width:'100%',marginTop:10}} onClick={()=>{setShowRegister(!showRegister);setAuthError('');}}>{showRegister?'Already registered? Login':'Register New School'}</button>}
   <p style={{textAlign:'center',fontSize:12,color:'#64748b'}}>Firebase Authentication</p>
  </form></div>;
  if(isPending)return <div style={styles.center}><div style={styles.loginCard}><h2>⏳ Registration Pending</h2><p>Your school registration has been received. Super Admin approval is required before you can use the dashboard.</p><p><b>{profile?.schoolName||mySchool?.name}</b></p><button style={styles.loginButton} onClick={logout}>Logout</button></div></div>;
@@ -250,19 +214,15 @@ export default function App(){
  return <div className="shell">
   <aside className="sidebar"><div className="brand"><span>🏫</span><div>School Manager Pro<small>NEW • MULTI-SCHOOL</small></div></div>
    <div className="side-caption">MAIN WORKSPACE</div><button className={'nav '+(active==='Dashboard'?'selected':'')} onClick={()=>setActive('Dashboard')}>📊 Dashboard</button>
-   {!isSuper&&<button className={'nav '+(active==='School Profile'?'selected':'')} onClick={()=>{setProfileEdit({name:mySchool?.name||profile?.schoolName||'',city:mySchool?.city||'',phone:mySchool?.phone||'',adminName:mySchool?.adminName||profile?.displayName||''});setActive('School Profile');}}>🏫 School Profile</button>}
-   {isSuper&&<button className={'nav '+(active==='Profile Update Requests'?'selected':'')} onClick={()=>setActive('Profile Update Requests')}>📝 Profile Update Requests {profileRequests.length>0?`(${profileRequests.length})`:''}</button>}
    {groups.filter(g=>isSuper||g.title!=='Super Admin').map(g=><div className="side-group" key={g.title}><div className="side-caption">{g.icon} {g.title}</div>{g.items.filter(([n])=>isSuper||!['Schools Management','School Admins','Roles & Permissions','Subscription & Plans','System Settings'].includes(n)).map(([n,ic])=><button key={n} className={'nav '+(active===n?'selected':'')} onClick={()=>setActive(n)}>{ic} {n}</button>)}</div>)}
   </aside>
   <main className="main"><header className="top"><div><b>{active}</b><small>{isSuper?'Super Admin':profile?.schoolName||'School Admin'} · School Manager Pro</small></div><div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>{isSuper&&<select value={school} onChange={e=>setSchool(e.target.value)}><option>All Schools</option>{schools.filter(s=>!s.legacy&&!['On Hold','Archived','Deleted'].includes(s.status)).map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select>}<button className="secondary" onClick={logout}>Logout</button></div></header>
    <div className="content">
     {active==='Dashboard'?<><section className="hero"><div><span className="eyebrow">{isSuper?'SUPER ADMIN WORKSPACE':'SCHOOL ADMIN WORKSPACE'}</span><h1>Welcome to School Manager Pro</h1><p>{isSuper?'Manage registered schools and platform activity.':'Manage your school from your mobile or computer.'}</p>{isSuper&&<button className="primary" onClick={()=>setActive('Schools Management')}>View School Registrations</button>}</div><div className="hero-icon">🏫</div></section><div className="stats"><div className="stat"><small>{isSuper?'Total Schools':'Your School'}</small><strong>{isSuper?schools.length:profile?.schoolName||'—'}</strong></div><div className="stat"><small>{isSuper?'Pending Approvals':'Total Students'}</small><strong>{isSuper?schools.filter(s=>!s.legacy&&s.status==='Pending').length:students.length}</strong></div><div className="stat"><small>Management Categories</small><strong>5</strong></div><div className="stat"><small>Modules</small><strong>{groups.reduce((n,g)=>n+g.items.length,0)}</strong></div></div>{isSuper&&<section className="workspace" style={{marginTop:18}}><div className="section-head"><div><h2>School-wise Student Overview</h2><p>Student counts are calculated separately using each school's School ID.</p></div><span>{schoolCountsLoading?'Updating counts…':`Total: ${Object.values(schoolStudentCounts).reduce((a,b)=>a+b,0)}`}</span></div><div className="table-wrap"><table><thead><tr><th>School</th><th>School ID</th><th>Status</th><th>Students</th><th>Action</th></tr></thead><tbody>{schools.filter(s=>!s.legacy&&!['Archived','Deleted'].includes(s.status)).map(s=><tr key={s.id}><td>{s.name}</td><td style={{fontSize:12}}>{s.id}</td><td>{s.status}</td><td><b>{schoolStudentCounts[s.id]??'—'}</b></td><td><button style={secondary} onClick={()=>{setSchool(s.id);setActive('Students');}}>Open School</button></td></tr>)}{!schools.some(s=>!s.legacy&&!['Archived','Deleted'].includes(s.status))&&<tr><td colSpan="5">No online schools found.</td></tr>}</tbody></table></div></section>}<div className="section-head"><div><h2>Management Panels</h2><p>Choose a category and open a module.</p></div><input value={queryText} onChange={e=>setQueryText(e.target.value)} placeholder="Search panels..."/></div>{visible.filter(g=>isSuper||g.title!=='Super Admin').map(g=><section className="category" key={g.title}><h3>{g.icon} {g.title}</h3><div className="tiles">{g.items.filter(([n])=>isSuper||!['Schools Management','School Admins','Roles & Permissions','Subscription & Plans','System Settings'].includes(n)).map(([n,ic])=><button className="tile" key={n} onClick={()=>setActive(n)}><span>{ic}</span><b>{n}</b><small>Open module →</small></button>)}</div></section>)}</>:null}
     {active==='Schools Management'&&isSuper?<section className="workspace"><div className="section-head"><div><h2>Schools Management</h2><p>Review registrations and control school access.</p></div><button style={primary} onClick={()=>setShowAddSchool(true)}>＋ Add School</button></div><div className="table-wrap"><table><thead><tr><th>School</th><th>Code</th><th>Admin</th><th>Address</th><th>Status</th><th>Actions</th></tr></thead><tbody>{schools.filter(s=>!s.convertedTo).map(s=><tr key={s.id}><td>{s.name}</td><td>{s.code}</td><td>{s.adminName||'—'}</td><td>{s.city||'—'}</td><td><b>{s.status}</b>{s.legacy?' · Demo (not online yet)':''}</td><td><div style={{display:'flex',gap:5,flexWrap:'wrap'}}>{s.legacy?<button style={primary} onClick={()=>setSchoolAction({school:s,action:'restore'})}>Add to Online Schools</button>:null}{!s.legacy&&s.status==='Pending'&&<button style={primary} onClick={()=>approveSchool(s)}>Approve</button>}{!s.legacy&&s.status==='Active'&&<button style={secondary} onClick={()=>holdSchool(s)}>Put On Hold</button>}{!s.legacy&&s.status==='On Hold'&&<button style={primary} onClick={()=>restoreSchool(s)}>Restore Active</button>}{!s.legacy&&s.status!=='Archived'&&<button style={danger} onClick={()=>archiveSchool(s)}>Archive</button>}{!s.legacy&&s.status==='Archived'&&<button style={primary} onClick={()=>restoreSchool(s)}>Restore</button>}</div></td></tr>)}</tbody></table></div></section>:null}
-    {active==='School Profile'&&!isSuper&&<section className="workspace"><div className="section-head"><div><h2>School Profile Update</h2><p>Submit changes for Super Admin approval. Your current profile remains active until approval.</p></div></div><form onSubmit={submitProfileUpdate} style={{maxWidth:680,display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:14}}><label style={labelStyle}>School Name<input style={inputStyle} required value={profileEdit.name} onChange={e=>setProfileEdit({...profileEdit,name:e.target.value})}/></label><label style={labelStyle}>School Address<input style={inputStyle} value={profileEdit.city} onChange={e=>setProfileEdit({...profileEdit,city:e.target.value})}/></label><label style={labelStyle}>Mobile Number<input style={inputStyle} required value={profileEdit.phone} onChange={e=>setProfileEdit({...profileEdit,phone:e.target.value})} placeholder="Enter current mobile number"/></label><label style={labelStyle}>Owner / Admin Name<input style={inputStyle} required value={profileEdit.adminName} onChange={e=>setProfileEdit({...profileEdit,adminName:e.target.value})}/></label><div style={{gridColumn:'1/-1'}}><button className="primary" disabled={profileRequestBusy}>{profileRequestBusy?'Submitting...':'Submit Update Request'}</button></div></form><h3 style={{marginTop:28}}>Your Update Requests</h3><div className="table-wrap"><table><thead><tr><th>Date</th><th>Requested Changes</th><th>Status</th></tr></thead><tbody>{myProfileRequests.map(r=><tr key={r.id}><td>{r.createdAt?.toDate?r.createdAt.toDate().toLocaleString():'Just now'}</td><td>{Object.entries(r.proposed||{}).map(([k,v])=>`${k}: ${v}`).join(' · ')}</td><td><b>{r.status}</b></td></tr>)}{!myProfileRequests.length&&<tr><td colSpan="3">No update requests submitted yet.</td></tr>}</tbody></table></div></section>}
-    {active==='Profile Update Requests'&&isSuper&&<section className="workspace"><div className="section-head"><div><h2>School Profile Update Requests</h2><p>Approve to apply proposed school details, or reject to keep existing details.</p></div><b>Pending: {profileRequests.length}</b></div><div className="table-wrap"><table><thead><tr><th>School</th><th>Current Details</th><th>Requested Details</th><th>Actions</th></tr></thead><tbody>{profileRequests.map(r=><tr key={r.id}><td>{r.schoolName||r.schoolId}</td><td>{Object.entries(r.previous||{}).map(([k,v])=><div key={k}><b>{k}:</b> {v||'—'}</div>)}</td><td>{Object.entries(r.proposed||{}).map(([k,v])=><div key={k}><b>{k}:</b> {v||'—'}</div>)}</td><td><div style={{display:'flex',gap:6,flexWrap:'wrap'}}><button style={primary} onClick={()=>decideProfileRequest(r,'Approved')}>Approve</button><button style={danger} onClick={()=>decideProfileRequest(r,'Rejected')}>Reject</button></div></td></tr>)}{!profileRequests.length&&<tr><td colSpan="4">No pending profile update requests.</td></tr>}</tbody></table></div></section>}
     {active==='Students'&&<section className="workspace"><div className="section-head"><div><h2>Students Management</h2><p>{isSuper?(school==='All Schools'?'Select one school to view its students.':'Showing records for '+(schools.find(s=>s.id===school)?.name||'selected school')):"Only your school's student records are shown."}</p></div>{(!isSuper||school!=='All Schools')&&<button style={primary} onClick={openNewStudent}>＋ Add Student</button>}</div>{isSuper&&school==='All Schools'?<div className="pending"><b>Choose a school first</b><p>Student records from different schools are not combined here. Select a school from the top menu or use the School-wise Student Overview on the Dashboard.</p></div>:null}{studentError&&<p style={{color:'#b91c1c',background:'#fee2e2',padding:10,borderRadius:8}}>{studentError}</p>}{!(isSuper&&school==='All Schools')&&<><div style={{display:'flex',gap:10,flexWrap:'wrap',margin:'15px 0'}}><input style={{...inputStyle,flex:'1 1 220px'}} value={studentSearch} onChange={e=>setStudentSearch(e.target.value)} placeholder="Search name, admission no, PEN, father, phone..."/><select style={{...inputStyle,flex:'0 1 180px'}} value={studentClassFilter} onChange={e=>setStudentClassFilter(e.target.value)}><option>All Classes</option>{classes.map(c=><option key={c}>{c}</option>)}</select></div><div style={{fontSize:13,color:'#64748b',marginBottom:10}}>Total students: <b>{filteredStudents.length}</b> {studentsLoading?' · Loading...':''}</div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Admission No.</th><th>PEN Number</th><th>Class</th><th>Father</th><th>Phone</th><th>Actions</th></tr></thead><tbody>{filteredStudents.map(s=><tr key={s.id}><td>{s.name}</td><td>{s.admissionNo||'—'}</td><td>{s.penNumber||'—'}</td><td>{s.className} {s.section}</td><td>{s.fatherName||'—'}</td><td>{s.phone||'—'}</td><td><div style={{display:'flex',gap:5,flexWrap:'wrap'}}><button style={secondary} onClick={()=>setViewStudent(s)}>View</button><button style={secondary} onClick={()=>openEditStudent(s)}>Edit</button><button style={danger} onClick={()=>removeStudent(s)}>Delete</button><button style={secondary} onClick={()=>shareStudent(s,'whatsapp')}>WhatsApp</button><button style={secondary} onClick={()=>shareStudent(s,'sms')}>SMS</button><button style={secondary} onClick={()=>shareStudent(s,'pdf')}>PDF / Print</button></div></td></tr>)}{!studentsLoading&&!filteredStudents.length&&<tr><td colSpan="7" style={{textAlign:'center',padding:25}}>No student records found.</td></tr>}</tbody></table></div></>}</section>}
     {groups.find(g=>g.title==='Finance Management')?.items.some(([name])=>name===active)&&<FinanceModule active={active} schoolId={isSuper?school:profile?.schoolId} schoolName={isSuper?(schools.find(s=>s.id===school)?.name||''):profile?.schoolName||mySchool?.name||''} students={students} profile={profile} onBack={()=>setActive('Dashboard')}/> }
-    {active!=='Dashboard'&&active!=='Students'&&!groups.find(g=>g.title==='Finance Management')?.items.some(([name])=>name===active)&&!(active==='Schools Management'&&isSuper)&&!(active==='School Profile'&&!isSuper)&&!(active==='Profile Update Requests'&&isSuper)&&<section className="workspace"><button className="back" onClick={()=>setActive('Dashboard')}>← Dashboard</button><h2>{active}</h2><div className="pending"><b>MODULE FOUNDATION</b><p>This module is listed and will be connected in its development phase. Students and school registration are the current live modules.</p></div></section>}
+    {active!=='Dashboard'&&active!=='Students'&&!groups.find(g=>g.title==='Finance Management')?.items.some(([name])=>name===active)&&!(active==='Schools Management'&&isSuper)&&<section className="workspace"><button className="back" onClick={()=>setActive('Dashboard')}>← Dashboard</button><h2>{active}</h2><div className="pending"><b>MODULE FOUNDATION</b><p>This module is listed and will be connected in its development phase. Students and school registration are the current live modules.</p></div></section>}
    </div>
   </main>
   {schoolAction&&<div className="overlay"><form className="modal" onSubmit={confirmSchoolAction}><h2>{schoolAction.action==='hold'?'Put School On Hold':schoolAction.action==='archive'?'Archive School':'Add / Restore School'}</h2><p>To prevent accidental changes, type the exact school name to confirm:</p><p><b>{schoolAction.school.name}</b></p><input autoFocus required style={inputStyle} value={typedSchoolName} onChange={e=>setTypedSchoolName(e.target.value)} placeholder="Type school name exactly"/><p style={{fontSize:12,color:'#64748b'}}>This action is saved online in Firebase. Archive does not permanently erase school or student records. Permanent deletion is intentionally not enabled in this update; it must include backup and deletion of related records.</p><div className="actions"><button type="button" className="secondary" onClick={()=>setSchoolAction(null)}>Cancel</button><button className="primary" disabled={schoolActionBusy||typedSchoolName.trim()!==schoolAction.school.name}>{schoolActionBusy?'Saving...':'Confirm'}</button></div></form></div>}
