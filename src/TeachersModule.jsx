@@ -19,7 +19,33 @@ export default function TeachersModule({schoolId,schoolName,profile,onBack}){
  const active=useMemo(()=>rows.filter(t=>t.status!=='On Hold'&&t.status!=='Removed'),[rows]);
  const filtered=rows.filter(t=>`${t.name} ${t.employeeId} ${t.phone} ${t.email}`.toLowerCase().includes(search.toLowerCase()));
  const openAdd=()=>{setEditing(null);setForm({...blank,employeeId:`${(schoolName||'SCH').replace(/[^A-Za-z]/g,'').slice(0,3).toUpperCase()}-T${String(rows.length+former.length+1).padStart(3,'0')}`});setShowForm(true);};
- const save=async e=>{e.preventDefault();if(!schoolId){setError('Pehle ek school select karein.');return;}setBusy(true);setError('');try{const data={...form,email:(form.email||'').trim().toLowerCase(),schoolId,schoolName:schoolName||'',classes:form.classes.split(',').map(x=>x.trim()).filter(Boolean),subjects:form.subjects.split(',').map(x=>x.trim()).filter(Boolean),updatedAt:serverTimestamp()};if(editing)await updateDoc(doc(db,'teachers',editing),data);else await addDoc(collection(db,'teachers'),{...data,status:'Active',createdAt:serverTimestamp(),createdBy:auth.currentUser?.uid||''});setShowForm(false);setNotice('Teacher record saved.');}catch(e){setError(e.message||'Save failed');}finally{setBusy(false);}};
+ const save=async e=>{e.preventDefault();if(!schoolId){setError('Pehle ek school select karein.');return;}setBusy(true);setError('');try{const data={
+  name:(form.name||'').trim(),
+  employeeId:(form.employeeId||'').trim(),
+  email:(form.email||'').trim().toLowerCase(),
+  phone:(form.phone||'').trim(),
+  designation:(form.designation||'Teacher').trim(),
+  qualification:(form.qualification||'').trim(),
+  joiningDate:form.joiningDate||'',
+  schoolId,
+  schoolName:schoolName||'',
+  classes:(Array.isArray(form.classes)?form.classes:String(form.classes||'').split(',')).map(x=>String(x).trim()).filter(Boolean),
+  subjects:(Array.isArray(form.subjects)?form.subjects:String(form.subjects||'').split(',')).map(x=>String(x).trim()).filter(Boolean),
+  updatedAt:serverTimestamp()
+};
+if(editing){
+  // Send only fields that School Admin is allowed to edit.
+  // Never send document id, teacherAuthUid, loginLinkedAt, createdAt or createdBy.
+  const {schoolName:keepSchoolName,...editableData}=data;
+  const currentTeacher=rows.find(t=>t.id===editing);
+  if(currentTeacher?.teacherAuthUid && editableData.email!==currentTeacher.email){
+    throw new Error('Is teacher ka login email linked hai. Security ke liye linked email yahan change nahi kar sakte.');
+  }
+  delete editableData.schoolId;
+  await updateDoc(doc(db,'teachers',editing),editableData);
+}else{
+  await addDoc(collection(db,'teachers'),{...data,status:'Active',createdAt:serverTimestamp(),createdBy:auth.currentUser?.uid||''});
+}setShowForm(false);setNotice('Teacher record saved.');}catch(e){setError(e.message||'Save failed');}finally{setBusy(false);}};
  const savePermissions=async(t)=>{setSavingPermissions(true);setPermissionError('');try{await updateDoc(doc(db,'teachers',t.id),{permissions:permissionDraft[t.id]||t.permissions||{},permissionsUpdatedAt:serverTimestamp(),permissionsUpdatedBy:auth.currentUser?.uid||''});setNotice('Permissions updated.');setSelected(null);setExitMode('');}catch(e){setPermissionError(e.code==='permission-denied'?'Firestore Rules ne is update ko allow nahi kiya. Teacher record read ho raha hai, lekin permissions update ke liye rules mein permission chahiye.':(e.message||'Permissions save nahi hui.'));}finally{setSavingPermissions(false);}};
  const togglePermission=(id,key)=>setPermissionDraft(p=>({...p,[id]:{...(p[id]||rows.find(t=>t.id===id)?.permissions||{}),[key]:!(p[id]||rows.find(t=>t.id===id)?.permissions||{})[key]}}));
  const changeStatus=async(t,status)=>{try{await updateDoc(doc(db,'teachers',t.id),{status,updatedAt:serverTimestamp()});setNotice(`Teacher status: ${status}`);}catch(e){setError(e.message);}};
