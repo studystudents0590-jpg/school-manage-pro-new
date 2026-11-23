@@ -1,33 +1,112 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  addDoc, collection, onSnapshot, query, where, updateDoc, doc, writeBatch, serverTimestamp, arrayUnion
+} from 'firebase/firestore';
+import { db } from './firebase';
 
-import React,{useEffect,useMemo,useState} from 'react';
-import {addDoc,collection,doc,onSnapshot,query,serverTimestamp,updateDoc,where} from 'firebase/firestore';
-import {db,auth} from './firebase';
-const DEFAULT_CLASSES=['Nursery','LKG','UKG',...Array.from({length:12},(_,i)=>String(i+1))];
-const box={border:'1px solid #e2e8f0',borderRadius:12,padding:14,background:'#fff'};
-const input={width:'100%',padding:11,border:'1px solid #cbd5e1',borderRadius:8,boxSizing:'border-box',fontSize:14};
-const primary={background:'#2457d6',color:'#fff',border:0,borderRadius:8,padding:'10px 15px',fontWeight:700};
-const soft={background:'#eef2ff',color:'#1e40af',border:0,borderRadius:8,padding:'9px 12px',fontWeight:600};
-export default function ClassesSectionsModule({schoolId,schoolName,profile,isTeacher,students=[],onBack}){
- const [sessions,setSessions]=useState([]),[classes,setClasses]=useState([]),[teachers,setTeachers]=useState([]),[sessionId,setSessionId]=useState(''),[loading,setLoading]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false),[showSession,setShowSession]=useState(false),[showClass,setShowClass]=useState(false),[editing,setEditing]=useState(null);
- const [sf,setSf]=useState({name:'2026-27',startDate:'2026-04-01',endDate:'2027-03-31'}),[form,setForm]=useState({className:'',sections:'A',classTeacherId:'',status:'Active'});
- useEffect(()=>{if(!schoolId||schoolId==='All Schools'){setLoading(false);return;}return onSnapshot(query(collection(db,'academicSessions'),where('schoolId','==',schoolId)),snap=>{const a=snap.docs.map(d=>({id:d.id,...d.data()})).sort((x,y)=>(y.startDate||'').localeCompare(x.startDate||''));setSessions(a);setSessionId(v=>v&&a.some(x=>x.id===v)?v:(a.find(x=>x.status==='Active')?.id||a[0]?.id||''));setLoading(false);},e=>{setError('Sessions: '+e.message);setLoading(false);});},[schoolId]);
- useEffect(()=>{if(!schoolId||schoolId==='All Schools')return;const q=isTeacher&&teacherClasses.length?query(collection(db,'schoolClasses'),where('schoolId','==',schoolId),where('className','in',teacherClasses.slice(0,30))):query(collection(db,'schoolClasses'),where('schoolId','==',schoolId));return onSnapshot(q,snap=>setClasses(snap.docs.map(d=>({id:d.id,...d.data()}))),e=>setError('Classes: '+e.message));},[schoolId,isTeacher,profile]);
- useEffect(()=>{if(!schoolId||schoolId==='All Schools'||isTeacher)return;return onSnapshot(query(collection(db,'teachers'),where('schoolId','==',schoolId),where('status','==','Active')),snap=>setTeachers(snap.docs.map(d=>({id:d.id,...d.data()}))),e=>setError('Teachers: '+e.message));},[schoolId,isTeacher]);
- const current=useMemo(()=>classes.filter(c=>!sessionId||c.academicYearId===sessionId),[classes,sessionId]);
+const DEFAULT_CLASSES = ['Nursery','LKG','UKG',...Array.from({length:12},(_,i)=>String(i+1))];
+const classSortRank = name => {
+ const value = String(name || '').trim();
+ const index = DEFAULT_CLASSES.findIndex(item => item.toLowerCase() === value.toLowerCase());
+ return index === -1 ? DEFAULT_CLASSES.length : index;
+};
+const compareClassNames = (a, b) => {
+ const rankA = classSortRank(a.className);
+ const rankB = classSortRank(b.className);
+ if (rankA !== rankB) return rankA - rankB;
+ return String(a.className || '').localeCompare(String(b.className || ''), undefined, { numeric: true, sensitivity: 'base' });
+};
+const box={background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,padding:16,marginBottom:14};
+const field={width:'100%',padding:10,border:'1px solid #cbd5e1',borderRadius:8,boxSizing:'border-box',fontSize:14};
+const btn={background:'#2457d6',color:'#fff',border:0,borderRadius:8,padding:'10px 14px',fontWeight:700,cursor:'pointer'};
+const soft={background:'#eef2ff',color:'#1e40af',border:0,borderRadius:8,padding:'9px 12px',fontWeight:600,cursor:'pointer'};
+const errText=e=>e?.code==='permission-denied'?'Permission denied. Please add and publish the Academic Phase 1 Firestore rules supplied with this update.':e?.message||'Something went wrong.';
+
+export default function ClassesSectionsModule({schoolId,schoolName,profile,isTeacher=false,students=[],onBack}){
+ const [sessions,setSessions]=useState([]),[classes,setClasses]=useState([]),[teachers,setTeachers]=useState([]);
+ const [loading,setLoading]=useState(true),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const [sessionName,setSessionName]=useState('2026-27'),[showSession,setShowSession]=useState(false);
+ const [showClass,setShowClass]=useState(false),[editing,setEditing]=useState(null);
+ const [form,setForm]=useState({className:'',sections:'A, B',classTeacherId:'',classTeacherName:'',capacity:''});
+ const [selectedSession,setSelectedSession]=useState('');
+ const canManage=!isTeacher && !!schoolId;
  const teacherClasses=Array.isArray(profile?.classes)?profile.classes:[];
- const visible=current.filter(c=>!isTeacher||teacherClasses.includes(c.className));
- const stu=students.filter(s=>!isTeacher||teacherClasses.includes(s.className));
- const count=(n,sec)=>stu.filter(s=>s.className===n&&(s.section||'')===(sec||'')).length;
- const addSession=async e=>{e.preventDefault();setBusy(true);setError('');try{if(sessions.some(x=>x.name?.toLowerCase()===sf.name.trim().toLowerCase()))throw Error('Session already exists.');for(const old of sessions.filter(x=>x.status==='Active'))await updateDoc(doc(db,'academicSessions',old.id),{status:'Inactive',updatedAt:serverTimestamp()});const r=await addDoc(collection(db,'academicSessions'),{schoolId,schoolName:schoolName||'',name:sf.name.trim(),startDate:sf.startDate,endDate:sf.endDate,status:'Active',createdAt:serverTimestamp(),createdBy:auth.currentUser?.uid||''});setSessionId(r.id);setShowSession(false);setNotice('Academic session created.');}catch(e){setError(e.message);}finally{setBusy(false);}};
- const defaults=async()=>{setBusy(true);setError('');try{if(!sessionId)throw Error('Create/select session first.');const exists=new Set(current.map(c=>c.className));const missing=DEFAULT_CLASSES.filter(n=>!exists.has(n));for(let i=0;i<missing.length;i++)await addDoc(collection(db,'schoolClasses'),{schoolId,schoolName:schoolName||'',academicYearId:sessionId,academicYearName:sessions.find(x=>x.id===sessionId)?.name||'',className:missing[i],sections:[],classTeacherId:'',classTeacherName:'',status:'Active',sortOrder:i,createdAt:serverTimestamp(),createdBy:auth.currentUser?.uid||'',updatedAt:serverTimestamp()});setNotice(missing.length?`${missing.length} classes added.`:'Default classes already exist.');}catch(e){setError(e.message);}finally{setBusy(false);}};
- const openAdd=()=>{setEditing(null);setForm({className:'',sections:'A',classTeacherId:'',status:'Active'});setShowClass(true);};
- const openEdit=c=>{setEditing(c.id);setForm({className:c.className||'',sections:(c.sections||[]).join(', '),classTeacherId:c.classTeacherId||'',status:c.status||'Active'});setShowClass(true);};
- const save=async e=>{e.preventDefault();setBusy(true);setError('');try{const name=form.className.trim(),sections=[...new Set(form.sections.split(',').map(x=>x.trim()).filter(Boolean))];if(!name||!sessionId)throw Error('Class name and session are required.');if(current.some(c=>c.id!==editing&&c.className?.toLowerCase()===name.toLowerCase()))throw Error('Class already exists in this session.');const t=teachers.find(x=>x.id===form.classTeacherId);const data={className:name,sections,classTeacherId:t?.id||'',classTeacherName:t?.name||'',status:form.status,updatedAt:serverTimestamp(),updatedBy:auth.currentUser?.uid||''};if(editing)await updateDoc(doc(db,'schoolClasses',editing),data);else await addDoc(collection(db,'schoolClasses'),{...data,schoolId,schoolName:schoolName||'',academicYearId:sessionId,academicYearName:sessions.find(x=>x.id===sessionId)?.name||'',sortOrder:current.length,createdAt:serverTimestamp(),createdBy:auth.currentUser?.uid||''});setShowClass(false);setNotice(editing?'Class updated.':'Class added.');}catch(e){setError(e.message);}finally{setBusy(false);}};
- if(!schoolId||schoolId==='All Schools')return <section className="workspace"><button className="back" onClick={onBack}>← Dashboard</button><h2>Classes & Sections</h2><div className="pending">Select one school first.</div></section>;
- return <section className="workspace"><div className="section-head"><div><h2>Classes & Sections</h2><p>{schoolName} · Academic session and class setup</p></div>{!isTeacher&&<button style={primary} onClick={()=>setShowSession(true)}>＋ New Academic Session</button>}</div>{error&&<p style={{background:'#fee2e2',color:'#991b1b',padding:10}}>{error}</p>}{notice&&<p style={{background:'#dcfce7',color:'#166534',padding:10}}>{notice}</p>}
- <div style={{...box,marginBottom:14}}><b>Academic Session</b><div style={{display:'flex',gap:8,marginTop:8,flexWrap:'wrap'}}><select style={{...input,flex:'1 1 200px'}} value={sessionId} onChange={e=>setSessionId(e.target.value)}><option value="">Select session</option>{sessions.map(x=><option key={x.id} value={x.id}>{x.name} {x.status==='Active'?'· Active':''}</option>)}</select>{!isTeacher&&<button style={soft} disabled={!sessionId||busy} onClick={defaults}>Add Default Classes</button>}</div>{!sessions.length&&!loading&&<p>No session yet. Create one to start.</p>}</div>
- <div className="section-head"><div><h3>Classes in selected session</h3><p>Student counts use existing Students records; no old student data is moved.</p></div>{!isTeacher&&<button style={primary} disabled={!sessionId} onClick={openAdd}>＋ Add Class</button>}</div>{loading?<p>Loading…</p>:!visible.length?<div className="pending">No classes configured for this session.</div>:<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(230px,1fr))',gap:12}}>{visible.map(c=><div key={c.id} style={box}><div style={{display:'flex',justifyContent:'space-between'}}><div><h3 style={{margin:'0 0 4px'}}>{c.className}</h3><small>{c.classTeacherName||'No Class Teacher assigned'}</small></div><b>{c.status}</b></div><p><b>{stu.filter(s=>s.className===c.className).length}</b> students</p><div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{(c.sections||[]).length?c.sections.map(sec=><span key={sec} style={{background:'#eff6ff',padding:'5px 9px',borderRadius:20,fontSize:12}}>{sec} · {count(c.className,sec)}</span>):<small>No sections</small>}</div>{!isTeacher&&<button style={{...soft,marginTop:10}} onClick={()=>openEdit(c)}>Edit</button>}</div>)}</div>}{isTeacher&&<p className="pending">Teacher view: assigned classes only. Admin manages class settings.</p>}
- {showSession&&<div className="overlay"><form className="modal" onSubmit={addSession}><h2>New Academic Session</h2><label>Session Name<input required style={input} value={sf.name} onChange={e=>setSf(v=>({...v,name:e.target.value}))}/></label><label>Start Date<input type="date" required style={input} value={sf.startDate} onChange={e=>setSf(v=>({...v,startDate:e.target.value}))}/></label><label>End Date<input type="date" required style={input} value={sf.endDate} onChange={e=>setSf(v=>({...v,endDate:e.target.value}))}/></label><p>Previous session records are not deleted or changed.</p><button type="button" style={soft} onClick={()=>setShowSession(false)}>Cancel</button> <button style={primary} disabled={busy}>Create Session</button></form></div>}
- {showClass&&<div className="overlay"><form className="modal" onSubmit={save}><h2>{editing?'Edit Class':'Add Class'}</h2><label>Class Name<input required style={input} value={form.className} onChange={e=>setForm(v=>({...v,className:e.target.value}))} placeholder="e.g. 3rd"/></label><label>Sections (comma separated)<input style={input} value={form.sections} onChange={e=>setForm(v=>({...v,sections:e.target.value}))} placeholder="A, B, C"/></label><label>Class Teacher<select style={input} value={form.classTeacherId} onChange={e=>setForm(v=>({...v,classTeacherId:e.target.value}))}><option value="">Not assigned</option>{teachers.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></label><label>Status<select style={input} value={form.status} onChange={e=>setForm(v=>({...v,status:e.target.value}))}><option>Active</option><option>Inactive</option></select></label><button type="button" style={soft} onClick={()=>setShowClass(false)}>Cancel</button> <button style={primary} disabled={busy}>Save Class</button></form></div>}
- </section>;
+
+ useEffect(()=>{
+  if(!schoolId){setSessions([]);setClasses([]);setTeachers([]);setLoading(false);return;}
+  setLoading(true);setError('');
+  const q1=query(collection(db,'academicSessions'),where('schoolId','==',schoolId));
+  const q2=query(collection(db,'schoolClasses'),where('schoolId','==',schoolId));
+  const q3=isTeacher?null:query(collection(db,'teachers'),where('schoolId','==',schoolId));
+  const un1=onSnapshot(q1,s=>{const rows=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.startDate||'').localeCompare(a.startDate||''));setSessions(rows);setSelectedSession(old=>old||rows.find(x=>x.status==='Active')?.id||rows[0]?.id||'');setLoading(false);},e=>{setError(errText(e));setLoading(false);});
+  const classQuery=isTeacher?(teacherClasses.length?query(collection(db,'schoolClasses'),where('schoolId','==',schoolId),where('className','in',teacherClasses.slice(0,30))):null):q2;
+  const un2=classQuery?onSnapshot(classQuery,s=>setClasses(s.docs.map(d=>({id:d.id,...d.data()}))),e=>setError(errText(e))):()=>setClasses([]);
+  const un3=q3?onSnapshot(q3,s=>setTeachers(s.docs.map(d=>({id:d.id,...d.data()})).filter(t=>t.status==='Active')),e=>setError(errText(e))):()=>{};
+  return ()=>{un1();un2();un3();};
+ },[schoolId,isTeacher,profile?.teacherId,(profile?.classes||[]).join('|')]);
+
+ const activeSession=sessions.find(s=>s.id===selectedSession)||sessions.find(s=>s.status==='Active')||null;
+ const visibleClasses=useMemo(()=>classes.filter(c=>(!selectedSession||c.sessionId===selectedSession)&&(!isTeacher||teacherClasses.includes(c.className))),[classes,selectedSession,isTeacher,teacherClasses]);
+ const studentCount=(className,section)=>students.filter(s=>s.className===className&&(!section||String(s.section||'').trim()===section)).length;
+ const startNewClass=()=>{setEditing(null);setForm({className:'',sections:'A, B',classTeacherId:'',classTeacherName:'',capacity:''});setShowClass(true);};
+ const startEdit=c=>{setEditing(c.id);setForm({className:c.className||'',sections:(c.sections||[]).join(', '),classTeacherId:c.classTeacherId||'',classTeacherName:c.classTeacherName||'',capacity:c.capacity??''});setShowClass(true);};
+ const saveSession=async e=>{
+  e.preventDefault();if(!canManage)return;
+  const name=sessionName.trim();if(!name)return;
+  setBusy(true);setError('');
+  try{
+   const batch=writeBatch(db);
+   sessions.filter(s=>s.status==='Active').forEach(s=>batch.update(doc(db,'academicSessions',s.id),{status:'Inactive',updatedAt:serverTimestamp()}));
+   const ref=doc(collection(db,'academicSessions'));
+   batch.set(ref,{schoolId,schoolName:schoolName||'',name,status:'Active',startDate:`${name.slice(0,4)}-04-01`,endDate:`${name.slice(5,9)||Number(name.slice(0,4))+1}-03-31`,createdAt:serverTimestamp(),createdBy:profile?.uid||profile?.email||''});
+   await batch.commit();setSelectedSession(ref.id);setShowSession(false);setSessionName('');
+  }catch(e){setError(errText(e));}finally{setBusy(false);}
+ };
+ const activateSession=async s=>{
+  if(!canManage)return;setBusy(true);setError('');
+  try{const batch=writeBatch(db);sessions.forEach(x=>batch.update(doc(db,'academicSessions',x.id),{status:x.id===s.id?'Active':'Inactive',updatedAt:serverTimestamp()}));await batch.commit();setSelectedSession(s.id);}
+  catch(e){setError(errText(e));}finally{setBusy(false);}
+ };
+ const addDefaultClasses=async()=>{
+  if(!canManage||!activeSession)return;
+  const existing=new Set(classes.filter(c=>c.sessionId===activeSession.id).map(c=>c.className));
+  const missing=DEFAULT_CLASSES.filter(n=>!existing.has(n));if(!missing.length){setError('All default classes already exist in this academic session.');return;}
+  setBusy(true);setError('');
+  try{const batch=writeBatch(db);missing.forEach(className=>{const ref=doc(collection(db,'schoolClasses'));batch.set(ref,{schoolId,schoolName:schoolName||'',sessionId:activeSession.id,sessionName:activeSession.name,className,sections:['A','B'],classTeacherId:'',classTeacherName:'',capacity:'',status:'Active',createdAt:serverTimestamp(),updatedAt:serverTimestamp()});});await batch.commit();}
+  catch(e){setError(errText(e));}finally{setBusy(false);}
+ };
+ const saveClass=async e=>{
+  e.preventDefault();if(!canManage||!activeSession)return;
+  const className=form.className.trim();if(!className){setError('Please enter a class name.');return;}
+  const sections=[...new Set(form.sections.split(',').map(x=>x.trim()).filter(Boolean))];
+  const teacher=teachers.find(t=>t.id===form.classTeacherId);
+  const payload={schoolId,schoolName:schoolName||'',sessionId:activeSession.id,sessionName:activeSession.name,className,sections,classTeacherId:teacher?.id||'',classTeacherName:teacher?.name||'',capacity:form.capacity===''?'':Number(form.capacity),status:editing?(classes.find(c=>c.id===editing)?.status||'Active'):'Active',updatedAt:serverTimestamp()};
+  setBusy(true);setError('');
+  try{
+   const batch=writeBatch(db);
+   if(editing)batch.update(doc(db,'schoolClasses',editing),payload);
+   else batch.set(doc(collection(db,'schoolClasses')),{...payload,createdAt:serverTimestamp()});
+   // Keep the teacher's assigned-class list in sync; module permission remains separately controlled.
+   if(teacher?.id)batch.update(doc(db,'teachers',teacher.id),{classes:arrayUnion(className),updatedAt:serverTimestamp()});
+   await batch.commit();setShowClass(false);setEditing(null);
+  }
+  catch(e){setError(errText(e));}finally{setBusy(false);}
+ };
+ const toggleStatus=async c=>{if(!canManage)return;try{await updateDoc(doc(db,'schoolClasses',c.id),{status:c.status==='Active'?'Inactive':'Active',updatedAt:serverTimestamp()});}catch(e){setError(errText(e));}};
+
+ if(!schoolId)return <section style={box}><button style={soft} onClick={onBack}>← Dashboard</button><h2>Classes & Sections</h2><p>Please select one school from the Super Admin school selector first.</p></section>;
+ return <div>
+  <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:14}}><div><button style={soft} onClick={onBack}>← Dashboard</button><h2 style={{margin:'12px 0 3px'}}>Classes & Sections</h2><div style={{color:'#64748b',fontSize:13}}>{schoolName||'Selected School'} · Academic setup</div></div>{canManage&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button style={soft} onClick={()=>setShowSession(true)}>＋ New Academic Session</button><button style={btn} onClick={startNewClass} disabled={!activeSession}>＋ Add Class</button></div>}</div>
+  {error&&<div style={{...box,background:'#fff1f2',color:'#9f1239',borderColor:'#fecdd3'}}>{error}</div>}
+  {isTeacher&&<div style={{...box,background:'#eff6ff',color:'#1e40af'}}>Teacher view is read-only. Only your assigned classes are displayed.</div>}
+  <section style={box}><div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',flexWrap:'wrap'}}><div><h3 style={{margin:'0 0 5px'}}>Academic Sessions</h3><p style={{margin:0,color:'#64748b',fontSize:13}}>Previous sessions remain saved. Creating a new session does not delete old records.</p></div>{canManage&&<button style={soft} onClick={()=>setShowSession(true)}>＋ Add Session</button>}</div>
+   {loading?<p>Loading academic data…</p>:sessions.length===0?<p style={{color:'#64748b'}}>No academic session created yet. Create a session to begin setting up classes.</p>:<div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:14}}>{sessions.map(s=><button key={s.id} onClick={()=>setSelectedSession(s.id)} style={{...soft,background:selectedSession===s.id?'#dbeafe':'#f1f5f9',border:selectedSession===s.id?'1px solid #2563eb':'1px solid transparent'}}>{s.name} · {s.status==='Active'?'Current':'Previous'}</button>)}</div>}
+   {canManage&&sessions.length>0&&activeSession?.status!=='Active'&&<button style={{...btn,marginTop:12}} onClick={()=>activateSession(activeSession)} disabled={busy}>Set selected session as Current</button>}
+  </section>
+  <section style={box}><div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',flexWrap:'wrap'}}><div><h3 style={{margin:'0 0 5px'}}>Class List {activeSession?`— ${activeSession.name}`:''}</h3><p style={{margin:0,color:'#64748b',fontSize:13}}>Manage class sections and class teachers for the selected academic session.</p></div>{canManage&&activeSession&&<button style={soft} onClick={addDefaultClasses} disabled={busy}>Add Default Classes</button>}</div>
+   {!activeSession?<p style={{color:'#64748b'}}>Create an academic session first.</p>:visibleClasses.length===0?<p style={{color:'#64748b'}}>No classes found for this session. Use “Add Default Classes” or “Add Class”.</p>:<div style={{overflowX:'auto',marginTop:12}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:650}}><thead><tr>{['Class','Sections','Class Teacher','Students','Status',...(canManage?['Actions']:[])].map(x=><th key={x} style={{textAlign:'left',padding:10,borderBottom:'1px solid #e2e8f0',fontSize:12,color:'#64748b'}}>{x}</th>)}</tr></thead><tbody>{[...visibleClasses].sort(compareClassNames).map(c=><tr key={c.id}><td style={{padding:10,borderBottom:'1px solid #f1f5f9',fontWeight:700}}>{c.className}</td><td style={{padding:10,borderBottom:'1px solid #f1f5f9'}}>{(c.sections||[]).join(', ')||'—'}</td><td style={{padding:10,borderBottom:'1px solid #f1f5f9'}}>{c.classTeacherName||'Not assigned'}</td><td style={{padding:10,borderBottom:'1px solid #f1f5f9'}}>{studentCount(c.className)}</td><td style={{padding:10,borderBottom:'1px solid #f1f5f9'}}>{c.status||'Active'}</td>{canManage&&<td style={{padding:10,borderBottom:'1px solid #f1f5f9'}}><div style={{display:'flex',gap:6,flexWrap:'wrap'}}><button style={soft} onClick={()=>startEdit(c)}>Edit</button><button style={soft} onClick={()=>toggleStatus(c)}>{c.status==='Active'?'Deactivate':'Activate'}</button></div></td>}</tr>)}</tbody></table></div>}
+  </section>
+  {showSession&&<div style={{position:'fixed',inset:0,background:'#0008',display:'grid',placeItems:'center',zIndex:1000,padding:14}}><form onSubmit={saveSession} style={{background:'#fff',borderRadius:14,padding:20,width:'100%',maxWidth:420,boxSizing:'border-box'}}><h3 style={{marginTop:0}}>Create Academic Session</h3><label style={{display:'block',fontWeight:600,marginBottom:6}}>Session Name</label><input style={field} required value={sessionName} onChange={e=>setSessionName(e.target.value)} placeholder="2026-27"/><p style={{fontSize:12,color:'#64748b'}}>The new session becomes current. Existing session and class records are retained.</p><div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:16}}><button type="button" style={soft} onClick={()=>setShowSession(false)}>Cancel</button><button style={btn} disabled={busy}>{busy?'Saving…':'Create Session'}</button></div></form></div>}
+  {showClass&&<div style={{position:'fixed',inset:0,background:'#0008',display:'grid',placeItems:'center',zIndex:1000,padding:14}}><form onSubmit={saveClass} style={{background:'#fff',borderRadius:14,padding:20,width:'100%',maxWidth:480,maxHeight:'90vh',overflowY:'auto',boxSizing:'border-box'}}><h3 style={{marginTop:0}}>{editing?'Edit Class':'Add Class'}</h3><label style={{display:'block',fontWeight:600,marginBottom:6}}>Class Name</label><input style={field} required value={form.className} onChange={e=>setForm({...form,className:e.target.value})} placeholder="e.g. Class 1"/><label style={{display:'block',fontWeight:600,margin:'12px 0 6px'}}>Sections (comma separated)</label><input style={field} value={form.sections} onChange={e=>setForm({...form,sections:e.target.value})} placeholder="A, B, C"/><label style={{display:'block',fontWeight:600,margin:'12px 0 6px'}}>Class Teacher</label><select style={field} value={form.classTeacherId} onChange={e=>setForm({...form,classTeacherId:e.target.value})}><option value="">Not assigned</option>{teachers.map(t=><option key={t.id} value={t.id}>{t.name}{t.designation?` · ${t.designation}`:''}</option>)}</select><label style={{display:'block',fontWeight:600,margin:'12px 0 6px'}}>Section Capacity (optional)</label><input style={field} type="number" min="0" value={form.capacity} onChange={e=>setForm({...form,capacity:e.target.value})} placeholder="e.g. 40"/><p style={{fontSize:12,color:'#64748b'}}>Academic Session: {activeSession?.name}</p><div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:16}}><button type="button" style={soft} onClick={()=>setShowClass(false)}>Cancel</button><button style={btn} disabled={busy}>{busy?'Saving…':'Save Class'}</button></div></form></div>}
+ </div>;
 }
