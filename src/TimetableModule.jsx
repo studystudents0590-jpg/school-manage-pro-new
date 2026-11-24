@@ -17,14 +17,15 @@ export default function TimetableModule({schoolId,schoolName,profile,students=[]
  useEffect(()=>{if(current){setDaysOpen(current.days||daysOpen);setPeriods(current.periods||periods);setVersionName(current.versionName||'Main Timetable');}else if(!editing){setPeriods([{type:'period',name:'Period 1',start:'08:00',end:'08:40',subject:'',teacher:''}]);}},[current?.id]);
  const updatePeriod=(i,key,value)=>setPeriods(p=>p.map((x,n)=>n===i?{...x,[key]:value}:x));
  const save=async()=>{if(!schoolId){setError('Select one school first.');return;}if(!periods.length){setError('Add at least one period.');return;}setBusy(true);setError('');try{
-  const payload={schoolId,schoolName:schoolName||'',sessionId:session,className,section:section||'',days:daysOpen,periods,versionName,status:'Active',updatedAt:serverTimestamp(),updatedBy:profile?.uid||profile?.id||''};
+  const parentUids=[...new Set(students.filter(s=>s.className===className&&(s.section||'')===(section||'')&&s.parentUid).map(s=>s.parentUid))];
+  const payload={schoolId,schoolName:schoolName||'',sessionId:session,className,section:section||'',days:daysOpen,periods,versionName,status:'Active',parentUids,updatedAt:serverTimestamp(),updatedBy:profile?.uid||profile?.id||''};
   if(current){await updateDoc(doc(db,'schoolTimetables',current.id),payload);}
   else {const batch=rows.filter(r=>r.sessionId===session&&r.className===className&&r.section===(section||'')&&r.status==='Active');for(const r of batch)await updateDoc(doc(db,'schoolTimetables',r.id),{status:'Inactive',supersededAt:serverTimestamp()});await addDoc(collection(db,'schoolTimetables'),{...payload,createdAt:serverTimestamp()});}
   setError('Saved successfully.');
  }catch(e){setError('Save failed: '+e.message);}finally{setBusy(false);}};
  const addPeriod=type=>setPeriods(p=>[...p,{type,name:type==='break'?'Break':`Period ${p.filter(x=>x.type==='period').length+1}`,start:'10:15',end:'10:55',subject:'',teacher:''}]);
  const removePeriod=i=>setPeriods(p=>p.filter((_,n)=>n!==i));
- const copyTo=async targetClass=>{if(!current)return;setBusy(true);try{const old=rows.find(r=>r.sessionId===session&&r.className===targetClass&&r.section===section&&r.status==='Active');if(old)await updateDoc(doc(db,'schoolTimetables',old.id),{status:'Inactive',supersededAt:serverTimestamp()});await addDoc(collection(db,'schoolTimetables'),{...current,className:targetClass,createdAt:serverTimestamp(),updatedAt:serverTimestamp(),copiedFrom:current.id});setError(`Copied to Class ${targetClass}.`);}catch(e){setError(e.message);}finally{setBusy(false);}};
+ const copyTo=async targetClass=>{if(!current)return;setBusy(true);try{const old=rows.find(r=>r.sessionId===session&&r.className===targetClass&&r.section===section&&r.status==='Active');if(old)await updateDoc(doc(db,'schoolTimetables',old.id),{status:'Inactive',supersededAt:serverTimestamp()});const parentUids=[...new Set(students.filter(s=>s.className===targetClass&&(s.section||'')===(section||'')&&s.parentUid).map(s=>s.parentUid))];await addDoc(collection(db,'schoolTimetables'),{...current,className:targetClass,parentUids,createdAt:serverTimestamp(),updatedAt:serverTimestamp(),copiedFrom:current.id});setError(`Copied to Class ${targetClass}.`);}catch(e){setError(e.message);}finally{setBusy(false);}};
  const print=()=>window.print();
  const canEdit=profile?.role==='schooladmin'||profile?.role==='superadmin';
  return <section className="workspace">
