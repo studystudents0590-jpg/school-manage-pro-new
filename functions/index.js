@@ -21,5 +21,13 @@ exports.createParentAccount=onCall(async(request)=>{
  batch.set(db.collection('users').doc(user.uid),{role:'parent',schoolId,schoolName:callerData.schoolName||'',email:email.trim().toLowerCase(),displayName:'Parent',createdAt:admin.firestore.FieldValue.serverTimestamp()});
  refs.forEach(ref=>batch.update(ref,{parentUid:user.uid,parentEmail:email.trim().toLowerCase(),parentLinkedAt:admin.firestore.FieldValue.serverTimestamp()}));
  try{await batch.commit();}catch(e){await admin.auth().deleteUser(user.uid);throw new HttpsError('internal','Could not link selected children. No account was retained.');}
+ // Keep timetable access synchronized for the linked children. Parent queries are restricted by parentUids.
+ const linkedClasses=new Map();
+ snaps.forEach(s=>{const d=s.data();const key=`${d.className||''}__${d.section||''}`;linkedClasses.set(key,{className:d.className||'',section:d.section||''});});
+ for(const item of linkedClasses.values()){
+  const timetableSnap=await db.collection('schoolTimetables').where('schoolId','==',schoolId).where('className','==',item.className).where('section','==',item.section).get();
+  const updates=timetableSnap.docs.filter(d=>d.data().status==='Active');
+  for(let i=0;i<updates.length;i+=400){const b=db.batch();updates.slice(i,i+400).forEach(d=>b.update(d.ref,{parentUids:admin.firestore.FieldValue.arrayUnion(user.uid)}));await b.commit();}
+ }
  return {uid:user.uid,email:user.email,linkedChildren:studentIds.length};
 });
