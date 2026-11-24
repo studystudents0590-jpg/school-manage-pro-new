@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { collection, doc, getDocs, query, where, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db } from './firebase';
 
@@ -11,15 +11,16 @@ const styles = {
   field:{width:'100%',padding:10,border:'1px solid #cbd5e1',borderRadius:8,background:'#fff',boxSizing:'border-box'},
   primary:{background:'#2457d6',color:'#fff',border:0,borderRadius:8,padding:'10px 15px',fontWeight:700,cursor:'pointer'},
   secondary:{background:'#eef2ff',color:'#1e40af',border:0,borderRadius:8,padding:'9px 12px',fontWeight:600,cursor:'pointer'},
-  muted:{fontSize:12,color:'#64748b'}
+  muted:{fontSize:12,color:'#64748b'},
+  stat:{padding:14,borderRadius:11,minWidth:0}
 };
 const statuses=['Present','Absent','Leave','Half Day'];
 const statusColors={Present:'#dcfce7',Absent:'#fee2e2',Leave:'#fef3c7','Half Day':'#dbeafe'};
-const errorText=e=>{
-  if(e?.code==='permission-denied')return 'Firestore permission denied. Check that the Attendance rules are published and this user has Attendance access.';
-  if(e?.code==='failed-precondition'&&String(e?.message||'').toLowerCase().includes('index'))return 'Firestore is requesting a composite index. For School Admin / Super Admin, this updated module avoids the date-range composite query. If you are signed in as a Teacher, the schoolId + className query may still require a teacher attendance index.';
-  return e?.message||'Something went wrong.';
-};
+const errorText=e=>e?.code==='permission-denied'?'Firestore permission denied. Check the Attendance read/write rules for this account.':e?.message||'Something went wrong.';
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const monthOf=d=>(d||'').slice(0,7);
+const statusCounts=rows=>rows.reduce((a,r)=>{const s=r.status||'Present';a[s]=(a[s]||0)+1;return a;},{Present:0,Absent:0,Leave:0,'Half Day':0});
+const percent=(n,total)=>total?Math.round(n*100/total):0;
 
 export default function AttendanceModule({schoolId,schoolName,profile,students=[],studentsLoading=false,isTeacher=false,onBack}) {
   const [date,setDate]=useState(today());
@@ -27,54 +28,76 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
   const [section,setSection]=useState('All Sections');
   const [attendance,setAttendance]=useState({});
   const [saved,setSaved]=useState({});
+  const [records,setRecords]=useState([]);
   const [loading,setLoading]=useState(false);
   const [saving,setSaving]=useState(false);
   const [reportLoading,setReportLoading]=useState(false);
-  const [report,setReport]=useState([]);
+  const [reportReady,setReportReady]=useState(false);
   const [search,setSearch]=useState('');
   const [message,setMessage]=useState('');
   const [error,setError]=useState('');
+  const [detailClass,setDetailClass]=useState('');
+  const [detailStatus,setDetailStatus]=useState('All');
+  const [historyStudent,setHistoryStudent]=useState(null);
+  const [view,setView]=useState('mark');
 
-  const classOptions=useMemo(()=>[...new Set(students.map(s=>s.className).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),[students]);
+  const activeStudents=useMemo(()=>students.filter(s=>!['inactive','left','transferred','deleted'].includes(String(s.status||'').toLowerCase()) && s.isActive!==false),[students]);
+  const classOptions=useMemo(()=>[...new Set(activeStudents.map(s=>String(s.className||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),[activeStudents]);
   useEffect(()=>{if(!className&&classOptions.length)setClassName(classOptions[0]);else if(className&&!classOptions.includes(className))setClassName(classOptions[0]||'');},[classOptions,className]);
-  const sectionOptions=useMemo(()=>[...new Set(students.filter(s=>s.className===className).map(s=>s.section).filter(Boolean))].sort(),[students,className]);
+  const sectionOptions=useMemo(()=>[...new Set(activeStudents.filter(s=>s.className===className).map(s=>s.section).filter(Boolean))].sort(),[activeStudents,className]);
   useEffect(()=>{if(section!=='All Sections'&&!sectionOptions.includes(section))setSection('All Sections');},[sectionOptions,section]);
-  const visibleStudents=useMemo(()=>students.filter(s=>s.className===className&&(section==='All Sections'||(s.section||'')===section)&&(`${s.name||''} ${s.admissionNo||''} ${s.fatherName||''} ${s.rollNo||''}`).toLowerCase().includes(search.toLowerCase())).sort((a,b)=>(a.name||'').localeCompare(b.name||'')),[students,className,section,search]);
 
-  useEffect(()=>{
-    let cancelled=false;
-    async function load(){
-      if(!schoolId||!date){setAttendance({});setSaved({});return;}
-      setLoading(true);setError('');setMessage('');
-      try{
-        // School Admin / Super Admin: use only the single-field schoolId query.
-        // This avoids requiring a composite index for schoolId + date.
-        // Teachers are additionally scoped to their assigned class by Firestore rules.
-        const constraints=[where('schoolId','==',schoolId)];
-        if(isTeacher){if(!className){setLoading(false);return;}constraints.push(where('className','==',className));}
-        const q=query(collection(db,'attendanceRecords'),...constraints);
-        const snap=await getDocs(q);
-        if(cancelled)return;
-        const records={};snap.forEach(d=>{const x=d.data();if(x.date===date)records[x.studentId]={status:x.status||'Present',recordId:d.id};});
-        setSaved(records);setAttendance(prev=>{const next={};visibleStudents.forEach(s=>{next[s.id]=records[s.id]?.status||'Present';});return next;});
-      }catch(e){if(!cancelled)setError(errorText(e));}
-      finally{if(!cancelled)setLoading(false);}
-    }
-    load();return()=>{cancelled=true;};
-  },[schoolId,date,students,className,isTeacher]);
+  const selectedStudents=useMemo(()=>activeStudents.filter(s=>s.className===className&&(section==='All Sections'||(s.section||'')===section)&&(`${s.name||''} ${s.admissionNo||''} ${s.fatherName||''} ${s.rollNo||''}`).toLowerCase().includes(search.toLowerCase())).sort((a,b)=>(a.name||'').localeCompare(b.name||'')),[activeStudents,className,section,search]);
+  const selectedDayRecords=useMemo(()=>records.filter(r=>r.date===date),[records,date]);
+  const recordMap=useMemo(()=>{const m={};selectedDayRecords.forEach(r=>{m[r.studentId]=r;});return m;},[selectedDayRecords]);
+  const visibleRows=useMemo(()=>selectedStudents.map(s=>({...s,status:attendance[s.id]||recordMap[s.id]?.status||'Present'})),[selectedStudents,attendance,recordMap]);
+  const counts=useMemo(()=>statusCounts(visibleRows),[visibleRows]);
 
-  // Keep the visible list in sync when class/section changes without creating new student records.
-  useEffect(()=>{setAttendance(prev=>{const next={...prev};visibleStudents.forEach(s=>{if(!next[s.id])next[s.id]=saved[s.id]?.status||'Present';});return next;});},[visibleStudents,saved]);
+  const loadRecords=useCallback(async()=>{
+    if(!schoolId){setRecords([]);setSaved({});return;}
+    setLoading(true);setError('');
+    try{
+      // One equality filter only: avoids a composite index for the school-wide date/month view.
+      const q=query(collection(db,'attendanceRecords'),where('schoolId','==',schoolId));
+      const snap=await getDocs(q);
+      const list=snap.docs.map(d=>({id:d.id,...d.data()}));
+      setRecords(list);
+      const day={};list.filter(r=>r.date===date).forEach(r=>{day[r.studentId]={status:r.status||'Present',recordId:r.id};});
+      setSaved(day);
+      setAttendance(prev=>{const next={...prev};activeStudents.forEach(s=>{if(s.className===className)next[s.id]=day[s.id]?.status||'Present';});return next;});
+    }catch(e){setError(errorText(e));}
+    finally{setLoading(false);}
+  },[schoolId,date,activeStudents,className]);
 
-  const counts=useMemo(()=>visibleStudents.reduce((a,s)=>{const v=attendance[s.id]||'Present';a[v]=(a[v]||0)+1;return a;},{Present:0,Absent:0,Leave:0,'Half Day':0}),[visibleStudents,attendance]);
-  const markAll=status=>{const next={...attendance};visibleStudents.forEach(s=>{next[s.id]=status;});setAttendance(next);};
+  useEffect(()=>{loadRecords();},[loadRecords]);
+  useEffect(()=>{setAttendance(prev=>{const next={...prev};selectedStudents.forEach(s=>{next[s.id]=recordMap[s.id]?.status||'Present';});return next;});},[selectedStudents,recordMap]);
+
+  const schoolDayRows=useMemo(()=>{
+    const byId=new Map(selectedDayRecords.map(r=>[r.studentId,r]));
+    return activeStudents.map(s=>{const r=byId.get(s.id);return r?{...s,status:r.status||'Present',date:r.date}:null;}).filter(Boolean);
+  },[activeStudents,selectedDayRecords]);
+  const overview=useMemo(()=>classOptions.map(c=>{
+    const classStudents=activeStudents.filter(s=>s.className===c);
+    const classRecords=schoolDayRows.filter(r=>r.className===c);
+    const n=statusCounts(classRecords);
+    const marked=classRecords.length;
+    return {className:c,total:classStudents.length,marked,present:n.Present||0,absent:n.Absent||0,leave:n.Leave||0,half:n['Half Day']||0,notMarked:Math.max(0,classStudents.length-marked),percentage:percent(n.Present||0,marked)};
+  }),[classOptions,activeStudents,schoolDayRows]);
+  const schoolCounts=useMemo(()=>statusCounts(schoolDayRows),[schoolDayRows]);
+  const classDetailStudents=useMemo(()=>{
+    const list=activeStudents.filter(s=>s.className===detailClass);
+    const map=new Map(schoolDayRows.map(r=>[r.id||r.studentId,r]));
+    return list.map(s=>({...s,status:map.get(s.id)?.status||'Not Marked'})).filter(s=>detailStatus==='All'||s.status===detailStatus);
+  },[activeStudents,detailClass,schoolDayRows,detailStatus]);
+
+  const markAll=status=>{const next={...attendance};selectedStudents.forEach(s=>{next[s.id]=status;});setAttendance(next);};
   const saveAttendance=async()=>{
     if(!schoolId){setError('Select a school before marking attendance.');return;}
-    if(!visibleStudents.length){setError('No admitted students found in this class/section.');return;}
+    if(!selectedStudents.length){setError('No admitted students found in this class/section.');return;}
     setSaving(true);setError('');setMessage('');
     try{
       const batch=writeBatch(db);
-      visibleStudents.forEach(s=>{
+      selectedStudents.forEach(s=>{
         const recordId=`${schoolId}_${date}_${s.id}`;
         const ref=doc(db,'attendanceRecords',recordId);
         const record={schoolId,studentId:s.id,studentName:s.name||'',admissionNo:s.admissionNo||'',className:s.className||'',section:s.section||'',date,status:attendance[s.id]||'Present',markedBy:profile?.uid||profile?.email||profile?.displayName||'',markedByRole:profile?.role||'',updatedAt:serverTimestamp()};
@@ -82,65 +105,128 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
         batch.set(ref,record,{merge:true});
       });
       await batch.commit();
-      const next={...saved};visibleStudents.forEach(s=>{next[s.id]={status:attendance[s.id]||'Present',recordId:`${schoolId}_${date}_${s.id}`};});
-      setSaved(next);setMessage(`Attendance saved for ${visibleStudents.length} students.`);
+      setMessage(`Attendance saved for ${selectedStudents.length} students.`);
+      await loadRecords();
     }catch(e){setError(errorText(e));}
     finally{setSaving(false);}
   };
+
   const loadMonthlyReport=async()=>{
-    if(!schoolId)return;
     setReportLoading(true);setError('');setMessage('');
-    try{
-      const month=date.slice(0,7);
-      // Fetch this school's records using a single-field query, then filter the
-      // selected month/class locally. Admin monthly reports therefore need no
-      // schoolId + date range composite index.
-      const constraints=[where('schoolId','==',schoolId)];
-      if(isTeacher&&className)constraints.push(where('className','==',className));
-      const q=query(collection(db,'attendanceRecords'),...constraints);
-      const snap=await getDocs(q);
-      const rows=snap.docs.map(d=>({id:d.id,...d.data()}))
-        .filter(r=>(r.date||'').startsWith(month)&&(!className||r.className===className))
-        .sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.studentName||'').localeCompare(b.studentName||''));
-      setReport(rows);
-    }catch(e){setError(errorText(e));}
+    try{await loadRecords();setReportReady(true);setView('reports');}
+    catch(e){setError(errorText(e));}
     finally{setReportLoading(false);}
   };
-  const exportCsv=()=>{
-    const rows=[['Date','Student Name','Admission No.','Class','Section','Status'],...report.map(r=>[r.date,r.studentName,r.admissionNo,r.className,r.section,r.status])];
-    const csv=rows.map(row=>row.map(v=>`"${String(v??'').replaceAll('"','""')}"`).join(',')).join('\n');
-    const blob=new Blob([`\uFEFF${csv}`],{type:'text/csv;charset=utf-8;'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`attendance-${date.slice(0,7)}.csv`;a.click();URL.revokeObjectURL(url);
+  const monthRecords=useMemo(()=>records.filter(r=>monthOf(r.date)===monthOf(date)&&(!isTeacher||r.className===className)),[records,date,isTeacher,className]);
+  const monthSummary=useMemo(()=>statusCounts(monthRecords),[monthRecords]);
+  const exportCsv=(rows=monthRecords,file='attendance-monthly')=>{
+    const data=[['Date','Student Name','Admission No.','Class','Section','Status'],...rows.map(r=>[r.date,r.studentName,r.admissionNo,r.className,r.section,r.status])];
+    const csv=data.map(row=>row.map(v=>`"${String(v??'').replaceAll('"','""')}"`).join(',')).join('\n');
+    const blob=new Blob([`\uFEFF${csv}`],{type:'text/csv;charset=utf-8;'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`${file}-${date.slice(0,7)}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  };
+  const printReport=(title,rows,summaryTitle='Attendance Report')=>{
+    const counts=statusCounts(rows);
+    const body=rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r.studentName||r.name||'')}</td><td>${esc(r.admissionNo||'—')}</td><td>${esc(r.className||'')}</td><td>${esc(r.section||'—')}</td><td>${esc(r.date||date)}</td><td>${esc(r.status||'Not Marked')}</td></tr>`).join('');
+    const html=`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>body{font-family:Arial,sans-serif;color:#17243a;padding:22px}h1{text-align:center;margin:0 0 5px;font-size:22px}h2{font-size:16px;margin:20px 0 8px}.sub{text-align:center;color:#64748b;font-size:12px;margin-bottom:18px}.stats{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.stats span{border:1px solid #ddd;border-radius:7px;padding:8px 12px;font-size:12px}table{border-collapse:collapse;width:100%;font-size:11px}th,td{border:1px solid #d9e0e8;padding:7px;text-align:left}th{background:#edf2f8}@media print{body{padding:8mm}}</style></head><body><h1>${esc(schoolName||'School')}</h1><div class="sub">${esc(title)} · Generated ${esc(new Date().toLocaleString())}</div><h2>${esc(summaryTitle)}</h2><div class="stats"><span>Total Records: ${rows.length}</span><span>Present: ${counts.Present||0}</span><span>Absent: ${counts.Absent||0}</span><span>Leave: ${counts.Leave||0}</span><span>Half Day: ${counts['Half Day']||0}</span></div><table><thead><tr><th>#</th><th>Student</th><th>Admission No.</th><th>Class</th><th>Section</th><th>Date</th><th>Status</th></tr></thead><tbody>${body}</tbody></table><script>window.onload=()=>setTimeout(()=>window.print(),350)<\/script></body></html>`;
+    const w=window.open('','_blank');if(!w){setError('Allow pop-ups to open the PDF / Print preview.');return;}w.document.open();w.document.write(html);w.document.close();
+  };
+  const shareReport=async(title,rows)=>{
+    const c=statusCounts(rows);
+    const msg=`${schoolName||'School'}\n${title}\nTotal: ${rows.length}\nPresent: ${c.Present||0}\nAbsent: ${c.Absent||0}\nLeave: ${c.Leave||0}\nHalf Day: ${c['Half Day']||0}`;
+    try{if(navigator.share)await navigator.share({title,text:msg});else if(navigator.clipboard){await navigator.clipboard.writeText(msg);setMessage('Attendance summary copied. You can paste it in WhatsApp.');}else setMessage(msg);}catch(e){if(e?.name!=='AbortError')setError('Sharing was not completed.');}
   };
 
+  const absentToday=schoolDayRows.filter(r=>r.status==='Absent');
+  const presentToday=schoolDayRows.filter(r=>r.status==='Present');
+  const selectedClassRows=schoolDayRows.filter(r=>r.className===detailClass);
+  const studentHistory=useMemo(()=>historyStudent?records.filter(r=>r.studentId===historyStudent.id).sort((a,b)=>(b.date||'').localeCompare(a.date||'')):[],[records,historyStudent]);
+
   return <section className="workspace">
-    <div className="section-head"><div><h2>✅ Attendance Management</h2><p>{schoolName||'School'} · Students are loaded directly from Admission / Students records.</p></div><button style={styles.secondary} onClick={onBack}>← Dashboard</button></div>
+    <div className="section-head"><div><h2>✅ Attendance Management</h2><p>{schoolName||'School'} · Admission-linked students · Nursery to Class 12 as configured in this school.</p></div><button style={styles.secondary} onClick={onBack}>← Dashboard</button></div>
     {studentsLoading&&<p style={styles.muted}>Loading admitted students…</p>}
     {!schoolId&&<p className="pending">Please select one school from the top menu before using Attendance.</p>}
-    {error&&<p style={{background:'#fee2e2',color:'#991b1b',padding:11,borderRadius:8}}>{error}</p>}
+    {error&&<p role="alert" style={{background:'#fee2e2',color:'#991b1b',padding:11,borderRadius:8,whiteSpace:'pre-wrap'}}>{error}</p>}
     {message&&<p style={{background:'#dcfce7',color:'#166534',padding:11,borderRadius:8}}>{message}</p>}
+
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:13}}>
+      {[['mark','Mark Attendance'],['overview','All Classes Overview'],['reports','Reports & Calendar']].map(([v,label])=><button key={v} style={view===v?styles.primary:styles.secondary} onClick={()=>setView(v)}>{label}</button>)}
+    </div>
+
     <div style={styles.panel}>
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12}}>
-        <label style={{fontSize:13,fontWeight:600}}>Attendance Date<input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{...styles.field,display:'block',marginTop:6}}/></label>
-        <label style={{fontSize:13,fontWeight:600}}>Class<select value={className} onChange={e=>setClassName(e.target.value)} style={{...styles.field,display:'block',marginTop:6}}><option value="">Select Class</option>{classOptions.map(c=><option key={c}>{c}</option>)}</select></label>
-        <label style={{fontSize:13,fontWeight:600}}>Section<select value={section} onChange={e=>setSection(e.target.value)} style={{...styles.field,display:'block',marginTop:6}}><option>All Sections</option>{sectionOptions.map(s=><option key={s}>{s}</option>)}</select></label>
-        <label style={{fontSize:13,fontWeight:600}}>Search Student<input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Name / Admission No." style={{...styles.field,display:'block',marginTop:6}}/></label>
+        <label style={{fontSize:13,fontWeight:600}}>Attendance Date<input type="date" value={date} onChange={e=>{setDate(e.target.value);setReportReady(false);}} style={{...styles.field,display:'block',marginTop:6}}/></label>
+        {view==='mark'&&<label style={{fontSize:13,fontWeight:600}}>Class<select value={className} onChange={e=>setClassName(e.target.value)} style={{...styles.field,display:'block',marginTop:6}}><option value="">Select Class</option>{classOptions.map(c=><option key={c}>{c}</option>)}</select></label>}
+        {view==='mark'&&<label style={{fontSize:13,fontWeight:600}}>Section<select value={section} onChange={e=>setSection(e.target.value)} style={{...styles.field,display:'block',marginTop:6}}><option>All Sections</option>{sectionOptions.map(s=><option key={s}>{s}</option>)}</select></label>}
+        {view==='mark'&&<label style={{fontSize:13,fontWeight:600}}>Search Student<input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Name / Admission No." style={{...styles.field,display:'block',marginTop:6}}/></label>}
       </div>
     </div>
-    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(115px,1fr))',gap:10,marginBottom:14}}>
-      {[['Total',visibleStudents.length,'#eff6ff'],['Present',counts.Present||0,'#dcfce7'],['Absent',counts.Absent||0,'#fee2e2'],['Leave',counts.Leave||0,'#fef3c7'],['Half Day',counts['Half Day']||0,'#dbeafe']].map(([label,value,bg])=><div key={label} style={{background:bg,padding:13,borderRadius:10}}><div style={{fontSize:12,color:'#475569'}}>{label}</div><strong style={{fontSize:23}}>{value}</strong></div>)}
-    </div>
-    <div style={styles.panel}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:12}}><div><b>Student Attendance</b><div style={styles.muted}>One record per student per date · Existing attendance can be edited and saved again.</div></div><div style={{display:'flex',gap:7,flexWrap:'wrap'}}><button style={styles.secondary} onClick={()=>markAll('Present')}>Mark All Present</button><button style={styles.secondary} onClick={()=>markAll('Absent')}>Mark All Absent</button></div></div>
-      <div className="table-wrap"><table><thead><tr><th>#</th><th>Student</th><th>Admission No.</th><th>Class / Section</th><th>Attendance</th></tr></thead><tbody>
-        {visibleStudents.map((s,i)=><tr key={s.id}><td>{i+1}</td><td><b>{s.name||'Unnamed Student'}</b><div style={styles.muted}>{s.fatherName||''}</div></td><td>{s.admissionNo||'—'}</td><td>{s.className||'—'} / {s.section||'—'}</td><td><select value={attendance[s.id]||'Present'} onChange={e=>setAttendance(p=>({...p,[s.id]:e.target.value}))} style={{...styles.field,minWidth:125,background:statusColors[attendance[s.id]||'Present']}}>{statuses.map(v=><option key={v}>{v}</option>)}</select></td></tr>)}
-        {!loading&&!visibleStudents.length&&<tr><td colSpan="5" style={{textAlign:'center',padding:24}}>No admitted students found for this class/section.</td></tr>}
-      </tbody></table></div>
-      <div style={{display:'flex',justifyContent:'flex-end',marginTop:14}}><button style={styles.primary} disabled={saving||loading||!visibleStudents.length||!schoolId} onClick={saveAttendance}>{saving?'Saving…':'Save / Update Attendance'}</button></div>
-    </div>
-    <div style={styles.panel}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap'}}><div><b>Monthly Attendance Report</b><div style={styles.muted}>Report month is selected from the Attendance Date above.</div></div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button style={styles.secondary} onClick={loadMonthlyReport} disabled={reportLoading}>{reportLoading?'Loading…':'View Monthly Report'}</button><button style={styles.secondary} onClick={exportCsv} disabled={!report.length}>Download Excel-compatible CSV</button></div></div>
-      {report.length>0&&<><p style={styles.muted}>Records: {report.length} · Class: {className||'All'}</p><div className="table-wrap"><table><thead><tr><th>Date</th><th>Student</th><th>Admission No.</th><th>Class</th><th>Status</th></tr></thead><tbody>{report.map(r=><tr key={r.id}><td>{r.date}</td><td>{r.studentName}</td><td>{r.admissionNo||'—'}</td><td>{r.className} {r.section}</td><td>{r.status}</td></tr>)}</tbody></table></div></>}
-      {report.length===0&&<p style={styles.muted}>Select a date in the required month, then click View Monthly Report.</p>}
-    </div>
+
+    {view==='mark'&&<>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(115px,1fr))',gap:10,marginBottom:14}}>
+        {[['Total',selectedStudents.length,'#eff6ff'],['Present',counts.Present||0,'#dcfce7'],['Absent',counts.Absent||0,'#fee2e2'],['Leave',counts.Leave||0,'#fef3c7'],['Half Day',counts['Half Day']||0,'#dbeafe']].map(([label,value,bg])=><div key={label} style={{...styles.stat,background:bg}}><div style={{fontSize:12,color:'#475569'}}>{label}</div><strong style={{fontSize:23}}>{value}</strong></div>)}
+      </div>
+      <div style={styles.panel}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:12}}><div><b>Student Attendance</b><div style={styles.muted}>One record per student per date · Existing attendance can be edited and saved again.</div></div><div style={{display:'flex',gap:7,flexWrap:'wrap'}}><button style={styles.secondary} onClick={()=>markAll('Present')}>Mark All Present</button><button style={styles.secondary} onClick={()=>markAll('Absent')}>Mark All Absent</button></div></div>
+        <div className="table-wrap"><table><thead><tr><th>#</th><th>Student</th><th>Admission No.</th><th>Class / Section</th><th>Attendance</th><th>History</th></tr></thead><tbody>
+          {visibleRows.map((s,i)=><tr key={s.id}><td>{i+1}</td><td><b>{s.name||'Unnamed Student'}</b><div style={styles.muted}>{s.fatherName||''}</div></td><td>{s.admissionNo||'—'}</td><td>{s.className||'—'} / {s.section||'—'}</td><td><select value={attendance[s.id]||'Present'} onChange={e=>setAttendance(p=>({...p,[s.id]:e.target.value}))} style={{...styles.field,minWidth:125,background:statusColors[attendance[s.id]||'Present']}}>{statuses.map(v=><option key={v}>{v}</option>)}</select></td><td><button style={styles.secondary} onClick={()=>setHistoryStudent(s)}>View</button></td></tr>)}
+          {!loading&&!visibleRows.length&&<tr><td colSpan="6" style={{textAlign:'center',padding:24}}>No admitted students found for this class/section.</td></tr>}
+        </tbody></table></div>
+        <div style={{display:'flex',justifyContent:'flex-end',marginTop:14}}><button style={styles.primary} disabled={saving||loading||!selectedStudents.length||!schoolId} onClick={saveAttendance}>{saving?'Saving…':'Save / Update Attendance'}</button></div>
+      </div>
+    </>}
+
+    {view==='overview'&&<>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(125px,1fr))',gap:10,marginBottom:14}}>
+        {[['Total Students',activeStudents.length,'#eff6ff'],['Marked',schoolDayRows.length,'#e0f2fe'],['Present',schoolCounts.Present||0,'#dcfce7'],['Absent',schoolCounts.Absent||0,'#fee2e2'],['Leave',schoolCounts.Leave||0,'#fef3c7'],['Half Day',schoolCounts['Half Day']||0,'#dbeafe']].map(([l,n,bg])=><div key={l} style={{...styles.stat,background:bg}}><div style={{fontSize:12,color:'#475569'}}>{l}</div><strong style={{fontSize:23}}>{n}</strong></div>)}
+      </div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+        <button style={styles.secondary} onClick={()=>printReport(`All Classes Attendance · ${date}`,schoolDayRows)}>PDF / Print All Classes</button>
+        <button style={styles.secondary} onClick={()=>exportCsv(schoolDayRows,'all-classes-attendance')}>Download CSV</button>
+        <button style={styles.secondary} onClick={()=>shareReport(`All Classes Attendance · ${date}`,schoolDayRows)}>Share Summary</button>
+        <button style={styles.secondary} onClick={()=>{setDetailClass('');setDetailStatus('Absent');}}>Show Absent Students</button>
+      </div>
+      <div style={styles.panel}>
+        <b>Class-wise Attendance · {date}</b>
+        <p style={styles.muted}>किसी Class पर क्लिक करके उस Class के सभी बच्चों की Attendance देखें।</p>
+        {overview.map(c=><button key={c.className} onClick={()=>{setDetailClass(c.className);setDetailStatus('All');}} style={{display:'block',width:'100%',textAlign:'left',border:'1px solid #e2e8f0',borderRadius:10,padding:12,marginTop:9,background:'#fff',cursor:'pointer',color:'#17243a'}}>
+          <div style={{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}><b>{c.className}</b><span style={{fontSize:12,color:'#475569'}}>Total {c.total} · Marked {c.marked} · Not Marked {c.notMarked}</span></div>
+          <div style={{display:'flex',height:9,borderRadius:20,overflow:'hidden',background:'#eef2f7',margin:'9px 0'}}>{c.present>0&&<span style={{width:`${c.present/Math.max(c.total,1)*100}%`,background:'#16a34a'}}/>}{c.absent>0&&<span style={{width:`${c.absent/Math.max(c.total,1)*100}%`,background:'#dc2626'}}/>}{(c.leave+c.half)>0&&<span style={{width:`${(c.leave+c.half)/Math.max(c.total,1)*100}%`,background:'#eab308'}}/>}</div>
+          <div style={{display:'flex',gap:13,flexWrap:'wrap',fontSize:12}}><span style={{color:'#15803d'}}>Present {c.present}</span><span style={{color:'#b91c1c'}}>Absent {c.absent}</span><span style={{color:'#a16207'}}>Leave {c.leave}</span><span style={{color:'#1d4ed8'}}>Half Day {c.half}</span><span style={{color:'#64748b'}}>Not Marked {c.notMarked}</span><b style={{marginLeft:'auto'}}>Open →</b></div>
+        </button>)}
+        {!overview.length&&<p style={styles.muted}>No active admitted students found for this school.</p>}
+      </div>
+      {detailClass&&<div style={styles.panel}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap',alignItems:'center'}}><div><b>{detailClass} · Student List</b><div style={styles.muted}>Date: {date}</div></div><button style={styles.secondary} onClick={()=>setDetailClass('')}>Close</button></div>
+        <div style={{display:'flex',gap:7,flexWrap:'wrap',margin:'12px 0'}}>{['All','Present','Absent','Leave','Half Day','Not Marked'].map(s=><button key={s} style={detailStatus===s?styles.primary:styles.secondary} onClick={()=>setDetailStatus(s)}>{s}</button>)}</div>
+        <div className="table-wrap"><table><thead><tr><th>#</th><th>Student</th><th>Admission No.</th><th>Section</th><th>Status</th><th>History</th></tr></thead><tbody>{classDetailStudents.map((s,i)=><tr key={s.id}><td>{i+1}</td><td>{s.name||'Unnamed Student'}</td><td>{s.admissionNo||'—'}</td><td>{s.section||'—'}</td><td><b style={{color:s.status==='Absent'?'#b91c1c':s.status==='Present'?'#15803d':'#475569'}}>{s.status}</b></td><td><button style={styles.secondary} onClick={()=>setHistoryStudent(s)}>View</button></td></tr>)}</tbody></table></div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button style={styles.secondary} onClick={()=>printReport(`${detailClass} Attendance · ${date}`,classDetailStudents)}>Class PDF / Print</button><button style={styles.secondary} onClick={()=>exportCsv(classDetailStudents,`${detailClass}-attendance`)}>Class CSV</button><button style={styles.secondary} onClick={()=>shareReport(`${detailClass} Attendance · ${date}`,classDetailStudents)}>Share Class Summary</button></div>
+      </div>}
+    </>}
+
+    {view==='reports'&&<>
+      <div style={styles.panel}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap',alignItems:'center'}}><div><b>Monthly Attendance Report</b><div style={styles.muted}>Selected month: {monthOf(date)} · School-wide records for the selected school.</div></div><button style={styles.primary} onClick={loadMonthlyReport} disabled={reportLoading}>{reportLoading?'Loading…':'Refresh Monthly Report'}</button></div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:9,marginTop:13}}>{[['Records',monthRecords.length],['Present',monthSummary.Present||0],['Absent',monthSummary.Absent||0],['Leave',monthSummary.Leave||0],['Half Day',monthSummary['Half Day']||0]].map(([l,n])=><div key={l} style={{background:'#f8fafc',padding:11,borderRadius:9}}><small>{l}</small><strong style={{display:'block',fontSize:21}}>{n}</strong></div>)}</div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button style={styles.secondary} onClick={()=>printReport(`Monthly Attendance · ${monthOf(date)}`,monthRecords)}>Monthly PDF / Print</button><button style={styles.secondary} onClick={()=>exportCsv()}>Download Excel-compatible CSV</button><button style={styles.secondary} onClick={()=>shareReport(`Monthly Attendance · ${monthOf(date)}`,monthRecords)}>Share Summary</button></div>
+      </div>
+      <div style={styles.panel}>
+        <b>Attendance Calendar · {monthOf(date)}</b>
+        <p style={styles.muted}>हर तारीख पर सेव Attendance Records की संख्या। किसी तारीख पर क्लिक करके उस दिन की Attendance देखें।</p>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr))',gap:6}}>
+          {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=><div key={d} style={{textAlign:'center',fontSize:11,color:'#64748b',fontWeight:700}}>{d}</div>)}
+          {Array.from({length:new Date(Number(date.slice(0,4)),Number(date.slice(5,7))-1,1).getDay()},(_,i)=><div key={`blank-${i}`}/>)}
+          {Array.from({length:new Date(Number(date.slice(0,4)),Number(date.slice(5,7)),0).getDate()},(_,i)=>{const day=i+1,ds=`${monthOf(date)}-${String(day).padStart(2,'0')}`,n=records.filter(r=>r.date===ds).length;return <button key={ds} onClick={()=>{setDate(ds);setView('overview');}} style={{border:'1px solid #e2e8f0',borderRadius:8,padding:'8px 2px',background:ds===date?'#dbeafe':'#fff',minWidth:0}}><b>{day}</b><small style={{display:'block',fontSize:9,color:n?'#15803d':'#94a3b8'}}>{n?`${n} rec.`:'—'}</small></button>;})}
+        </div>
+      </div>
+    </>}
+
+    {historyStudent&&<div style={{position:'fixed',inset:0,background:'#0f172a88',zIndex:9999,display:'grid',placeItems:'center',padding:14}} onClick={()=>setHistoryStudent(null)}>
+      <div style={{background:'#fff',borderRadius:14,padding:18,width:'min(700px,100%)',maxHeight:'85vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
+        <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'center'}}><div><b>Student Attendance History</b><div style={styles.muted}>{historyStudent.name} · {historyStudent.admissionNo||'No Admission No.'}</div></div><button style={styles.secondary} onClick={()=>setHistoryStudent(null)}>Close</button></div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:7,margin:'13px 0'}}>{[['Present',statusCounts(studentHistory).Present||0],['Absent',statusCounts(studentHistory).Absent||0],['Leave',statusCounts(studentHistory).Leave||0],['Half Day',statusCounts(studentHistory)['Half Day']||0]].map(([l,n])=><div key={l} style={{background:'#f1f5f9',borderRadius:8,padding:8}}><small>{l}</small><b style={{display:'block',fontSize:20}}>{n}</b></div>)}</div>
+        <div className="table-wrap"><table><thead><tr><th>Date</th><th>Class</th><th>Status</th></tr></thead><tbody>{studentHistory.map(r=><tr key={r.id}><td>{r.date}</td><td>{r.className}</td><td>{r.status}</td></tr>)}</tbody></table></div>
+        <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}><button style={styles.secondary} onClick={()=>printReport(`${historyStudent.name} · Attendance History`,studentHistory)}>Student History PDF / Print</button><button style={styles.secondary} onClick={()=>exportCsv(studentHistory,'student-attendance-history')}>Download CSV</button></div>
+      </div>
+    </div>}
   </section>;
 }
