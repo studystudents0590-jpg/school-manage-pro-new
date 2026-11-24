@@ -15,7 +15,11 @@ const styles = {
 };
 const statuses=['Present','Absent','Leave','Half Day'];
 const statusColors={Present:'#dcfce7',Absent:'#fee2e2',Leave:'#fef3c7','Half Day':'#dbeafe'};
-const errorText=e=>e?.code==='permission-denied'?'Firestore permission denied. Please add and publish the Attendance rules supplied with this update.':e?.message||'Something went wrong.';
+const errorText=e=>{
+  if(e?.code==='permission-denied')return 'Firestore permission denied. Check that the Attendance rules are published and this user has Attendance access.';
+  if(e?.code==='failed-precondition'&&String(e?.message||'').toLowerCase().includes('index'))return 'Firestore is requesting a composite index. For School Admin / Super Admin, this updated module avoids the date-range composite query. If you are signed in as a Teacher, the schoolId + className query may still require a teacher attendance index.';
+  return e?.message||'Something went wrong.';
+};
 
 export default function AttendanceModule({schoolId,schoolName,profile,students=[],studentsLoading=false,isTeacher=false,onBack}) {
   const [date,setDate]=useState(today());
@@ -43,12 +47,15 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
       if(!schoolId||!date){setAttendance({});setSaved({});return;}
       setLoading(true);setError('');setMessage('');
       try{
-        const constraints=[where('schoolId','==',schoolId),where('date','==',date)];
+        // School Admin / Super Admin: use only the single-field schoolId query.
+        // This avoids requiring a composite index for schoolId + date.
+        // Teachers are additionally scoped to their assigned class by Firestore rules.
+        const constraints=[where('schoolId','==',schoolId)];
         if(isTeacher){if(!className){setLoading(false);return;}constraints.push(where('className','==',className));}
         const q=query(collection(db,'attendanceRecords'),...constraints);
         const snap=await getDocs(q);
         if(cancelled)return;
-        const records={};snap.forEach(d=>{const x=d.data();records[x.studentId]={status:x.status||'Present',recordId:d.id};});
+        const records={};snap.forEach(d=>{const x=d.data();if(x.date===date)records[x.studentId]={status:x.status||'Present',recordId:d.id};});
         setSaved(records);setAttendance(prev=>{const next={};visibleStudents.forEach(s=>{next[s.id]=records[s.id]?.status||'Present';});return next;});
       }catch(e){if(!cancelled)setError(errorText(e));}
       finally{if(!cancelled)setLoading(false);}
@@ -84,11 +91,18 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
     if(!schoolId)return;
     setReportLoading(true);setError('');setMessage('');
     try{
-      const month=date.slice(0,7),start=`${month}-01`,end=`${month}-31`;
-      const constraints=[where('schoolId','==',schoolId),where('date','>=',start),where('date','<=',end)];
+      const month=date.slice(0,7);
+      // Fetch this school's records using a single-field query, then filter the
+      // selected month/class locally. Admin monthly reports therefore need no
+      // schoolId + date range composite index.
+      const constraints=[where('schoolId','==',schoolId)];
       if(isTeacher&&className)constraints.push(where('className','==',className));
       const q=query(collection(db,'attendanceRecords'),...constraints);
-      const snap=await getDocs(q);setReport(snap.docs.map(d=>({id:d.id,...d.data()})).filter(r=>!className||r.className===className));
+      const snap=await getDocs(q);
+      const rows=snap.docs.map(d=>({id:d.id,...d.data()}))
+        .filter(r=>(r.date||'').startsWith(month)&&(!className||r.className===className))
+        .sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.studentName||'').localeCompare(b.studentName||''));
+      setReport(rows);
     }catch(e){setError(errorText(e));}
     finally{setReportLoading(false);}
   };
