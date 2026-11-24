@@ -16,7 +16,7 @@ export default function ParentPortal({profile,schoolId,isAdmin,students=[],onBac
 }
 function ChildTimetable({child}){
  const [items,setItems]=useState([]),[error,setError]=useState('');
- useEffect(()=>{const q=query(collection(db,'schoolTimetables'),where('schoolId','==',child.schoolId),where('className','==',child.className),where('section','==',(child.section||'')),where('status','==','Active'));return onSnapshot(q,s=>setItems(s.docs.map(d=>({id:d.id,...d.data()}))),e=>setError(e.message));},[child.id]);
+ useEffect(()=>{const q=query(collection(db,'schoolTimetables'),where('schoolId','==',child.schoolId),where('className','==',child.className),where('section','==',(child.section||'')),where('status','==','Active'),where('parentUids','array-contains',auth.currentUser.uid));return onSnapshot(q,s=>setItems(s.docs.map(d=>({id:d.id,...d.data()}))),e=>setError(e.message));},[child.id]);
  const session=child.academicYear||child.feeConfig?.academicYear||'';
  const row=items.find(x=>!session||x.sessionId===session)||items[0];
  const print=()=>window.print();
