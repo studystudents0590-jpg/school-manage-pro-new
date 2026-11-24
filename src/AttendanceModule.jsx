@@ -93,19 +93,6 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
     return {className:c,total:classStudents.length,marked,present:n.Present||0,absent:n.Absent||0,leave:n.Leave||0,half:n['Half Day']||0,notMarked:Math.max(0,classStudents.length-marked),percentage:percent(n.Present||0,marked)};
   }),[classOptions,activeStudents,schoolDayRows]);
   const schoolCounts=useMemo(()=>statusCounts(schoolDayRows),[schoolDayRows]);
-  const classDetailStudents=useMemo(()=>{
-    const list=activeStudents.filter(s=>s.className===detailClass);
-    return list.map(s=>{
-      const rows=periodRecords.filter(r=>r.className===detailClass&&r.studentId===s.id);
-      if(periodType==='daily'){
-        const r=rows[0];
-        return {...s,...(r||{}),status:r?.status||'Not Marked',recordsCount:rows.length};
-      }
-      const n=statusCounts(rows); const total=rows.length;
-      return {...s,status:total?`Present ${n.Present||0} · Absent ${n.Absent||0}`:'No Record',recordsCount:total,periodPresent:n.Present||0,periodAbsent:n.Absent||0,periodLeave:n.Leave||0,periodHalf:n['Half Day']||0,periodPercent:percent(n.Present||0,total),absenceReason:rows.filter(r=>r.absenceReason).map(r=>r.absenceReason).join(', '),applicationStatus:rows.some(r=>r.applicationStatus==='Submitted'||r.applicationStatus==='Approved')?'Application Submitted':'',applicationText:rows.filter(r=>r.applicationText).map(r=>r.applicationText).join('; ')};
-    }).filter(s=>detailStatus==='All'||(periodType==='daily'?s.status===detailStatus:detailStatus==='Present'?s.periodPresent>0:detailStatus==='Absent'?s.periodAbsent>0:detailStatus==='Leave'?s.periodLeave>0:detailStatus==='Half Day'?s.periodHalf>0:detailStatus==='No Record'?!s.recordsCount:false));
-  },[activeStudents,detailClass,periodRecords,periodType,detailStatus]);
-
   const markAll=status=>{const next={...attendance};selectedStudents.forEach(s=>{next[s.id]=status;});setAttendance(next);};
   const saveAttendance=async()=>{
     if(!schoolId){setError('Select a school before marking attendance.');return;}
@@ -147,6 +134,19 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
     return rows;
   },[records,periodType,date,searchMonth,yearRange.start,yearRange.end,isTeacher,activeStudents]);
   const periodSummary=useMemo(()=>statusCounts(periodRecords),[periodRecords]);
+  const classDetailStudents=useMemo(()=>{
+    const list=activeStudents.filter(s=>s.className===detailClass);
+    return list.map(s=>{
+      const rows=periodRecords.filter(r=>r.className===detailClass&&r.studentId===s.id);
+      if(periodType==='daily'){
+        const r=rows[0];
+        return {...s,...(r||{}),status:r?.status||'Not Marked',recordsCount:rows.length};
+      }
+      const n=statusCounts(rows); const total=rows.length;
+      return {...s,status:total?`Present ${n.Present||0} · Absent ${n.Absent||0}`:'No Record',recordsCount:total,periodPresent:n.Present||0,periodAbsent:n.Absent||0,periodLeave:n.Leave||0,periodHalf:n['Half Day']||0,periodPercent:percent(n.Present||0,total),absenceReason:rows.filter(r=>r.absenceReason).map(r=>r.absenceReason).join(', '),applicationStatus:rows.some(r=>r.applicationStatus==='Submitted'||r.applicationStatus==='Approved')?'Application Submitted':'',applicationText:rows.filter(r=>r.applicationText).map(r=>r.applicationText).join('; ')};
+    }).filter(s=>detailStatus==='All'||(periodType==='daily'?s.status===detailStatus:detailStatus==='Present'?s.periodPresent>0:detailStatus==='Absent'?s.periodAbsent>0:detailStatus==='Leave'?s.periodLeave>0:detailStatus==='Half Day'?s.periodHalf>0:detailStatus==='No Record'?!s.recordsCount:false));
+  },[activeStudents,detailClass,periodRecords,periodType,detailStatus]);
+
   const periodDenominator=periodType==='daily'?activeStudents.length:periodRecords.length;
   const globalSearchResults=useMemo(()=>{const q=globalStudentSearch.trim().toLowerCase();if(!q)return [];return activeStudents.filter(s=>`${s.name||''} ${s.admissionNo||''} ${s.fatherName||''} ${s.rollNo||''}`.toLowerCase().includes(q)).slice(0,20);},[activeStudents,globalStudentSearch]);
   const periodOverview=useMemo(()=>classOptions.map(c=>{
