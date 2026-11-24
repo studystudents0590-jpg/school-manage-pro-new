@@ -86,8 +86,16 @@ export default function App(){
     p={...td,role:'teacher',teacherId:teacherDoc.id,schoolId:td.schoolId,schoolName:td.schoolName||'',displayName:td.name||current.email,email:current.email};
     await setDoc(doc(db,'users',current.uid),{role:'teacher',teacherId:teacherDoc.id,schoolId:td.schoolId,schoolName:p.schoolName,displayName:p.displayName,email:current.email,createdAt:serverTimestamp()});
    }
-   if(!['superadmin','schooladmin','teacher'].includes(p.role)) throw new Error('This account has no permitted role.');
+   if(!['superadmin','schooladmin','teacher','parent'].includes(p.role)) throw new Error('This account has no permitted role.');
    if(p.role==='teacher' && (!p.teacherId||!p.schoolId)) throw new Error('Teacher account is not linked correctly. Contact your School Admin.');
+   if(p.role==='parent') {
+    if(!p.schoolId) throw new Error('Parent account is not linked to a school. Contact your School Admin.');
+    const parentSchool=await getDoc(doc(db,'schools',p.schoolId));
+    if(!parentSchool.exists()||parentSchool.data().status!=='Active') throw new Error('Your school is not active. Contact your School Admin.');
+    const linkedChildren=await getDocs(query(collection(db,'students'),where('parentUid','==',current.uid)));
+    if(linkedChildren.empty) throw new Error('No child is linked to this Parent Login. Contact your School Admin.');
+    p={...p,schoolName:p.schoolName||parentSchool.data().name||'',email:current.email||p.email||''};
+   }
    setUser(current);setProfile(p);if(p?.role==='parent')setActive('Parent Portal');setAuthError('');
   }catch(e){setUser(null);setProfile(null);setAuthError(e.message||'Account verification failed.');await signOut(auth);}
   setChecking(false);
@@ -123,6 +131,7 @@ export default function App(){
 
  useEffect(()=>{
   if(!user||!profile)return;
+  if(profile.role==='parent'){setStudents([]);setStudentsLoading(false);setStudentError('');return;}
   // Never combine student records from different schools in the student workspace.
   if(profile.role==='superadmin'&&school==='All Schools'){
    setStudents([]);setStudentsLoading(false);setStudentError('');
@@ -144,7 +153,7 @@ export default function App(){
  // Load the selected school's academic session and its configured classes/sections.
  // This keeps the Admission form connected to the same setup used by Classes & Sections.
  useEffect(()=>{
-  if(!user||!profile){setAcademicSessions([]);setSchoolClassSetup([]);setAcademicSetupLoading(false);return;}
+  if(!user||!profile||profile.role==='parent'){setAcademicSessions([]);setSchoolClassSetup([]);setAcademicSetupLoading(false);return;}
   const targetSchool=profile.role==='superadmin'?school:profile.schoolId;
   if(!targetSchool||targetSchool==='All Schools'){
    setAcademicSessions([]);setSchoolClassSetup([]);setAcademicSetupLoading(false);return;
@@ -226,7 +235,7 @@ export default function App(){
  const teacherPermissions=profile?.permissions||{};
  const isAppOwner=isSuper&&user?.uid===APP_OWNER_UID;
  const mySchool=schools.find(s=>s.id===profile?.schoolId);
- const isPending=!isSuper&&!isTeacher&&mySchool?.status!=='Active';
+ const isPending=profile?.role==='schooladmin'&&mySchool?.status!=='Active';
  const openSchoolProfile=()=>{setProfileEdit({name:mySchool?.name||profile?.schoolName||'',city:mySchool?.city||'',phone:mySchool?.phone||'',adminName:mySchool?.adminName||profile?.displayName||''});setActive('School Profile');};
  const submitProfileUpdate=async e=>{
   e.preventDefault();if(!mySchool||!user)return;
