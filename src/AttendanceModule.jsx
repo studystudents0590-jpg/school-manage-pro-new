@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
-import { collection, doc, getDocs, query, where, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, getDocs, query, where, writeBatch, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
 
 const today = () => {
@@ -33,6 +33,7 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
   const [attendance,setAttendance]=useState({});
   const [saved,setSaved]=useState({});
   const [records,setRecords]=useState([]);
+  const [studentLeaveApps,setStudentLeaveApps]=useState([]);
   const [loading,setLoading]=useState(false);
   const [saving,setSaving]=useState(false);
   const [reportLoading,setReportLoading]=useState(false);
@@ -50,6 +51,12 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
   const [absenceDetails,setAbsenceDetails]=useState({});
   const [globalStudentSearch,setGlobalStudentSearch]=useState('');
 
+  // Reason/application controls are intentionally limited by role.
+  const isSchoolAdmin = profile?.role === 'schooladmin';
+  const isPlatformSuperAdmin = profile?.role === 'superadmin';
+  const canEditReason = isSchoolAdmin || (isTeacher && profile?.permissions?.Attendance === true);
+  const canReviewApplication = isSchoolAdmin;
+
   const activeStudents=useMemo(()=>students.filter(s=>!['inactive','left','transferred','deleted'].includes(String(s.status||'').toLowerCase()) && s.isActive!==false),[students]);
   const classOptions=useMemo(()=>[...new Set(activeStudents.map(s=>String(s.className||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),[activeStudents]);
   useEffect(()=>{if(!className&&classOptions.length)setClassName(classOptions[0]);else if(className&&!classOptions.includes(className))setClassName(classOptions[0]||'');},[classOptions,className]);
@@ -59,6 +66,7 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
   const selectedStudents=useMemo(()=>activeStudents.filter(s=>s.className===className&&(section==='All Sections'||(s.section||'')===section)&&(`${s.name||''} ${s.admissionNo||''} ${s.fatherName||''} ${s.rollNo||''}`).toLowerCase().includes(search.toLowerCase())).sort((a,b)=>(a.name||'').localeCompare(b.name||'')),[activeStudents,className,section,search]);
   const selectedDayRecords=useMemo(()=>records.filter(r=>r.date===date),[records,date]);
   const recordMap=useMemo(()=>{const m={};selectedDayRecords.forEach(r=>{m[r.studentId]=r;});return m;},[selectedDayRecords]);
+  const leaveApplicationMap=useMemo(()=>{const m={};studentLeaveApps.filter(a=>(a.fromDate||'')<=date&&(a.toDate||'')>=date).sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0)).forEach(a=>{if(!m[a.studentId])m[a.studentId]=a;});return m;},[studentLeaveApps,date]);
   const visibleRows=useMemo(()=>selectedStudents.map(s=>({...s,status:attendance[s.id]||recordMap[s.id]?.status||'Present'})),[selectedStudents,attendance,recordMap]);
   const counts=useMemo(()=>statusCounts(visibleRows),[visibleRows]);
 
@@ -66,17 +74,38 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
     if(!schoolId){setRecords([]);setSaved({});return;}
     setLoading(true);setError('');
     try{
-      // One equality filter only: avoids a composite index for the school-wide date/month view.
-      const q=query(collection(db,'attendanceRecords'),where('schoolId','==',schoolId));
-      const snap=await getDocs(q);
-      const list=snap.docs.map(d=>({id:d.id,...d.data()}));
+      // Teacher reads are constrained to the exact classes assigned by the School Admin;
+      // School Admin reads remain school-wide. This also satisfies Firestore query rules.
+      const assignedClasses=Array.isArray(profile?.classes)?profile.classes.filter(Boolean):[];
+      let attendanceSnaps=[];
+      if(isTeacher){
+        for(let i=0;i<assignedClasses.length;i+=30){
+          attendanceSnaps.push(await getDocs(query(collection(db,'attendanceRecords'),where('schoolId','==',schoolId),where('className','in',assignedClasses.slice(i,i+30)))));
+        }
+      } else {
+        // Super Admin keeps the existing attendance overview/read access, but never loads leave applications.
+        attendanceSnaps=[await getDocs(query(collection(db,'attendanceRecords'),where('schoolId','==',schoolId)))];
+      }
+      const list=attendanceSnaps.flatMap(snap=>snap.docs.map(d=>({id:d.id,...d.data()})));
       setRecords(list);
+      // Parent-submitted leave applications are likewise limited to assigned classes for teachers.
+      if(isTeacher && assignedClasses.length){
+        const appQueries=[];
+        for(let i=0;i<assignedClasses.length;i+=30){
+          appQueries.push(getDocs(query(collection(db,'studentLeaveApplications'),where('schoolId','==',schoolId),where('className','in',assignedClasses.slice(i,i+30)))));
+        }
+        const appSnaps=await Promise.all(appQueries);
+        setStudentLeaveApps(appSnaps.flatMap(x=>x.docs.map(d=>({id:d.id,...d.data()}))));
+      } else if(!isTeacher && !isPlatformSuperAdmin){
+        const appSnap=await getDocs(query(collection(db,'studentLeaveApplications'),where('schoolId','==',schoolId)));
+        setStudentLeaveApps(appSnap.docs.map(d=>({id:d.id,...d.data()})));
+      } else setStudentLeaveApps([]);
       const day={};list.filter(r=>r.date===date).forEach(r=>{day[r.studentId]={status:r.status||'Present',recordId:r.id};});
       setSaved(day);
       setAttendance(prev=>{const next={...prev};activeStudents.forEach(s=>{if(s.className===className)next[s.id]=day[s.id]?.status||'Present';});return next;});
     }catch(e){setError(errorText(e));}
     finally{setLoading(false);}
-  },[schoolId,date,activeStudents,className]);
+  },[schoolId,date,activeStudents,className,isTeacher,profile]);
 
   useEffect(()=>{loadRecords();},[loadRecords]);
   useEffect(()=>{setAttendance(prev=>{const next={...prev};selectedStudents.forEach(s=>{next[s.id]=recordMap[s.id]?.status||'Present';});return next;});},[selectedStudents,recordMap]);
@@ -104,7 +133,7 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
         const recordId=`${schoolId}_${date}_${s.id}`;
         const ref=doc(db,'attendanceRecords',recordId);
         const extra=absenceDetails[s.id]||{};
-        const record={schoolId,studentId:s.id,studentName:s.name||'',admissionNo:s.admissionNo||'',className:s.className||'',section:s.section||'',date,status:attendance[s.id]||'Present',absenceReason:extra.reason||'',applicationStatus:extra.applicationStatus||'Not Submitted',applicationText:extra.applicationText||'',markedBy:profile?.uid||profile?.email||profile?.displayName||'',markedByRole:profile?.role||'',updatedAt:serverTimestamp()};
+        const record={schoolId,studentId:s.id,studentName:s.name||'',admissionNo:s.admissionNo||'',className:s.className||'',section:s.section||'',date,status:attendance[s.id]||'Present',absenceReason:extra.reason??recordMap[s.id]?.absenceReason??'',applicationStatus:canReviewApplication?(extra.applicationStatus??recordMap[s.id]?.applicationStatus??'Not Submitted'):(recordMap[s.id]?.applicationStatus||'Not Submitted'),applicationText:extra.applicationText??recordMap[s.id]?.applicationText??'',markedBy:profile?.uid||profile?.email||profile?.displayName||'',markedByRole:profile?.role||'',updatedAt:serverTimestamp()};
         if(!saved[s.id])record.createdAt=serverTimestamp();
         batch.set(ref,record,{merge:true});
       });
@@ -113,6 +142,26 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
       await loadRecords();
     }catch(e){setError(errorText(e));}
     finally{setSaving(false);}
+  };
+
+  const updateAttendanceReason=async(record,changes)=>{
+    if(!record?.id || (!isSchoolAdmin && !(isTeacher && profile?.permissions?.Attendance===true)) || isPlatformSuperAdmin)return;
+    setError('');setMessage('');
+    try{
+      await updateDoc(doc(db,'attendanceRecords',record.id),{...changes,updatedAt:serverTimestamp()});
+      setRecords(prev=>prev.map(r=>r.id===record.id?{...r,...changes}:r));
+      setMessage('Attendance reason updated.');
+    }catch(e){setError(errorText(e));}
+  };
+
+  const updateLeaveApplication=async(app,changes)=>{
+    if(!app?.id || (!isSchoolAdmin && !(isTeacher && profile?.permissions?.Attendance===true)) || isPlatformSuperAdmin)return;
+    setError('');setMessage('');
+    try{
+      await updateDoc(doc(db,'studentLeaveApplications',app.id),{...changes,updatedAt:serverTimestamp(),updatedBy:profile?.uid||profile?.teacherId||''});
+      setStudentLeaveApps(prev=>prev.map(a=>a.id===app.id?{...a,...changes}:a));
+      setMessage(isSchoolAdmin?'Leave application updated.':'Application reason updated.');
+    }catch(e){setError(errorText(e));}
   };
 
   const loadMonthlyReport=async()=>{
@@ -206,7 +255,7 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
       <div style={styles.panel}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:12}}><div><b>Student Attendance</b><div style={styles.muted}>One record per student per date · Existing attendance can be edited and saved again.</div></div><div style={{display:'flex',gap:7,flexWrap:'wrap'}}><button style={styles.secondary} onClick={()=>markAll('Present')}>Mark All Present</button><button style={styles.secondary} onClick={()=>markAll('Absent')}>Mark All Absent</button></div></div>
         <div className="table-wrap"><table><thead><tr><th>#</th><th>Student</th><th>Admission No.</th><th>Class / Section</th><th>Attendance</th><th>Reason / Leave Application</th><th>History</th></tr></thead><tbody>
-          {visibleRows.map((s,i)=><tr key={s.id}><td>{i+1}</td><td><b>{s.name||'Unnamed Student'}</b><div style={styles.muted}>{s.fatherName||''}</div></td><td>{s.admissionNo||'—'}</td><td>{s.className||'—'} / {s.section||'—'}</td><td><select value={attendance[s.id]||'Present'} onChange={e=>setAttendance(p=>({...p,[s.id]:e.target.value}))} style={{...styles.field,minWidth:125,background:statusColors[attendance[s.id]||'Present']}}>{statuses.map(v=><option key={v}>{v}</option>)}</select></td><td style={{minWidth:210}}>{['Absent','Leave'].includes(attendance[s.id]||'Present')&&<div style={{display:'grid',gap:5}}><input placeholder="Reason (Fever etc.)" value={absenceDetails[s.id]?.reason||recordMap[s.id]?.absenceReason||''} onChange={e=>setAbsenceDetails(p=>({...p,[s.id]:{...p[s.id],reason:e.target.value}}))} style={styles.field}/><select value={absenceDetails[s.id]?.applicationStatus||recordMap[s.id]?.applicationStatus||'Not Submitted'} onChange={e=>setAbsenceDetails(p=>({...p,[s.id]:{...p[s.id],applicationStatus:e.target.value}}))} style={styles.field}><option>Not Submitted</option><option>Submitted</option><option>Approved</option><option>Rejected</option><option>Pending</option></select><textarea placeholder="Application details / parent message" value={absenceDetails[s.id]?.applicationText||recordMap[s.id]?.applicationText||''} onChange={e=>setAbsenceDetails(p=>({...p,[s.id]:{...p[s.id],applicationText:e.target.value}}))} style={styles.field}/></div>}</td><td><button style={styles.secondary} onClick={()=>setHistoryStudent(s)}>View</button></td></tr>)}
+          {visibleRows.map((s,i)=><tr key={s.id}><td>{i+1}</td><td><b>{s.name||'Unnamed Student'}</b><div style={styles.muted}>{s.fatherName||''}</div></td><td>{s.admissionNo||'—'}</td><td>{s.className||'—'} / {s.section||'—'}</td><td><select value={attendance[s.id]||'Present'} onChange={e=>setAttendance(p=>({...p,[s.id]:e.target.value}))} style={{...styles.field,minWidth:125,background:statusColors[attendance[s.id]||'Present']}}>{statuses.map(v=><option key={v}>{v}</option>)}</select></td><td style={{minWidth:210}}>{(()=>{const app=leaveApplicationMap[s.id];const record=recordMap[s.id];return <div style={{display:'grid',gap:5}}>{(app||record?.absenceReason||record?.applicationText||['Absent','Leave'].includes(attendance[s.id]||record?.status||'Present'))&&<><div style={styles.muted}>Reason: {app?.reason||record?.absenceReason||'No reason submitted'}</div>{app&&<><div style={styles.muted}>Parent application · {app.fromDate} to {app.toDate} · {app.status||'Pending'}</div>{canEditReason&&!isPlatformSuperAdmin&&<textarea aria-label="Edit leave reason" placeholder="Edit application reason" defaultValue={app.reason||''} key={`${app.id}-${app.reason||''}`} onBlur={e=>{if(e.target.value!==app.reason)updateLeaveApplication(app,{reason:e.target.value});}} style={styles.field}/>}{canReviewApplication&&<div style={{display:'flex',gap:5,flexWrap:'wrap'}}><button type="button" style={styles.primary} onClick={()=>updateLeaveApplication(app,{status:'Approved',reviewedBy:profile?.uid||'',reviewedAt:serverTimestamp()})}>Accept</button><button type="button" style={{...styles.secondary,color:'#991b1b'}} onClick={()=>updateLeaveApplication(app,{status:'Rejected',reviewedBy:profile?.uid||'',reviewedAt:serverTimestamp()})}>Reject</button><button type="button" style={styles.secondary} onClick={()=>updateLeaveApplication(app,{reason:'',status:'Pending',reviewedBy:'',reviewedAt:null})}>Reset</button></div>}</>}{!app&&record&&<><div style={styles.muted}>Attendance note: {record.applicationText||'—'} · {record.applicationStatus||'Not Submitted'}</div>{canEditReason&&!isPlatformSuperAdmin&&<><input placeholder="Reason (Fever etc.)" value={absenceDetails[s.id]?.reason??record.absenceReason??''} onChange={e=>setAbsenceDetails(p=>({...p,[s.id]:{...p[s.id],reason:e.target.value}}))} style={styles.field}/><textarea placeholder="Application details / parent message" value={absenceDetails[s.id]?.applicationText??record.applicationText??''} onChange={e=>setAbsenceDetails(p=>({...p,[s.id]:{...p[s.id],applicationText:e.target.value}}))} style={styles.field}/><button type="button" style={styles.secondary} onClick={()=>setAbsenceDetails(p=>({...p,[s.id]:{...p[s.id],reason:'',applicationText:''}}))}>Reset Reason</button></>}</>}</>}</div>;})()}</td><td><button style={styles.secondary} onClick={()=>setHistoryStudent(s)}>View</button></td></tr>)}
           {!loading&&!visibleRows.length&&<tr><td colSpan="7" style={{textAlign:'center',padding:24}}>No admitted students found for this class/section.</td></tr>}
         </tbody></table></div>
         <div style={{display:'flex',justifyContent:'flex-end',marginTop:14}}><button style={styles.primary} disabled={saving||loading||!selectedStudents.length||!schoolId} onClick={saveAttendance}>{saving?'Saving…':'Save / Update Attendance'}</button></div>
@@ -250,7 +299,7 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
       {detailClass&&<div style={styles.panel}>
         <div style={{display:'flex',justifyContent:'space-between',gap:8,flexWrap:'wrap',alignItems:'center'}}><div><b>{detailClass} · Student List</b><div style={styles.muted}>{periodTitle}</div></div><button style={styles.secondary} onClick={()=>setDetailClass('')}>Close</button></div>
         <div style={{display:'flex',gap:7,flexWrap:'wrap',margin:'12px 0'}}>{['All','Present','Absent','Leave','Half Day','Not Marked','No Record'].map(s=><button key={s} style={detailStatus===s?styles.primary:styles.secondary} onClick={()=>setDetailStatus(s)}>{s}</button>)}</div>
-        <div className="table-wrap"><table><thead><tr><th>#</th><th>Student</th><th>Admission No.</th><th>Section</th><th>Status</th><th>Reason / Application</th><th>History</th></tr></thead><tbody>{classDetailStudents.map((s,i)=><tr key={s.id}><td>{i+1}</td><td>{s.name||'Unnamed Student'}</td><td>{s.admissionNo||'—'}</td><td>{s.section||'—'}</td><td><b style={{color:s.status==='Absent'?'#b91c1c':s.status==='Present'?'#15803d':'#475569'}}>{s.status}</b>{periodType!=='daily'&&s.recordsCount>0&&<div style={styles.muted}>Present {s.periodPresent} ({s.periodPercent}%) · Absent {s.periodAbsent} · Leave {s.periodLeave} · Half Day {s.periodHalf}</div>}</td><td>{s.absenceReason||'—'}<div style={styles.muted}>{s.applicationStatus||''} {s.applicationText?`· ${s.applicationText}`:''}</div></td><td><button style={styles.secondary} onClick={()=>setHistoryStudent(s)}>View</button></td></tr>)}</tbody></table></div>
+        <div className="table-wrap"><table><thead><tr><th>#</th><th>Student</th><th>Admission No.</th><th>Section</th><th>Status</th><th>Reason / Application</th><th>History</th></tr></thead><tbody>{classDetailStudents.map((s,i)=><tr key={s.id}><td>{i+1}</td><td>{s.name||'Unnamed Student'}</td><td>{s.admissionNo||'—'}</td><td>{s.section||'—'}</td><td><b style={{color:s.status==='Absent'?'#b91c1c':s.status==='Present'?'#15803d':'#475569'}}>{s.status}</b>{periodType!=='daily'&&s.recordsCount>0&&<div style={styles.muted}>Present {s.periodPresent} ({s.periodPercent}%) · Absent {s.periodAbsent} · Leave {s.periodLeave} · Half Day {s.periodHalf}</div>}</td><td>{(()=>{const app=leaveApplicationMap[s.id];return <div style={{display:'grid',gap:5}}><div>{app?.reason||s.absenceReason||'—'}</div>{app&&<><div style={styles.muted}>Parent application · {app.fromDate} to {app.toDate} · {app.status||'Pending'}</div>{canEditReason&&!isPlatformSuperAdmin&&<><textarea aria-label="Edit leave reason" defaultValue={app.reason||''} key={`${app.id}-${app.reason||''}-detail`} onBlur={e=>{if(e.target.value!==app.reason)updateLeaveApplication(app,{reason:e.target.value});}} style={styles.field}/>{!canReviewApplication&&<button type="button" style={styles.secondary} onClick={()=>updateLeaveApplication(app,{reason:''})}>Reset Reason</button>}</>}{canReviewApplication&&<div style={{display:'flex',gap:5,flexWrap:'wrap'}}><button type="button" style={styles.primary} onClick={()=>updateLeaveApplication(app,{status:'Approved',reviewedBy:profile?.uid||'',reviewedAt:serverTimestamp()})}>Accept</button><button type="button" style={{...styles.secondary,color:'#991b1b'}} onClick={()=>updateLeaveApplication(app,{status:'Rejected',reviewedBy:profile?.uid||'',reviewedAt:serverTimestamp()})}>Reject</button><button type="button" style={styles.secondary} onClick={()=>updateLeaveApplication(app,{reason:'',status:'Pending',reviewedBy:'',reviewedAt:null})}>Reset</button></div>}</>}{!app&&<><div style={styles.muted}>{s.applicationStatus||''} {s.applicationText?`· ${s.applicationText}`:''}</div>{canEditReason&&!isPlatformSuperAdmin&&s.id&&s.date&&<><textarea aria-label="Edit attendance reason" defaultValue={s.absenceReason||''} key={`${s.id}-${s.date}-${s.absenceReason||''}`} placeholder="Reason / application details" onBlur={e=>{if(e.target.value!==(s.absenceReason||''))updateAttendanceReason(records.find(r=>r.studentId===s.id&&r.date===s.date),{absenceReason:e.target.value});}} style={styles.field}/><button type="button" style={styles.secondary} onClick={()=>updateAttendanceReason(records.find(r=>r.studentId===s.id&&r.date===s.date),{absenceReason:'',applicationText:''})}>Reset Reason</button></>}</>}</div>;})()}</td><td><button style={styles.secondary} onClick={()=>setHistoryStudent(s)}>View</button></td></tr>)}</tbody></table></div>
         <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button style={styles.secondary} onClick={()=>printReport(`${detailClass} Attendance · ${date}`,classDetailStudents)}>Class PDF / Print</button><button style={styles.secondary} onClick={()=>exportCsv(classDetailStudents,`${detailClass}-attendance`)}>Class CSV</button><button style={styles.secondary} onClick={()=>shareReport(`${detailClass} Attendance · ${date}`,classDetailStudents)}>Share Class Summary</button></div>
       </div>}
     </>}
