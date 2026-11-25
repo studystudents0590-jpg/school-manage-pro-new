@@ -28,7 +28,8 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
   const unsubs=refs.map(([name,setter])=>onSnapshot(query(collection(db,name),where('schoolId','==',schoolId)),snap=>setter(snap.docs.map(d=>({id:d.id,...d.data()}))),e=>setError(e.message)));
   setLoading(false);return()=>unsubs.forEach(u=>u());
  },[schoolId]);
- const activeStudents=students.filter(s=>!s.passedOut&&s.status!=='Passed Out'&&s.status!=='Transferred'&&s.status!=='Inactive');
+ const isFinanceActiveStudent=s=>!s.passedOut&&!['passed out','transferred','inactive','left','deleted'].includes(String(s.status||'').trim().toLowerCase())&&s.isActive!==false;
+ const activeStudents=students.filter(isFinanceActiveStudent);
  const collectionClasses=[...new Set(activeStudents.map(s=>String(s.className||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
  const collectionStudents=activeStudents.filter(s=>String(s.className||'').trim()===collectionClass);
  const searchableCollectionStudents=collectionStudents.filter(s=>`${s.name||''} ${s.admissionNo||''} ${s.penNumber||''} ${s.rollNo||''} ${s.rollNumber||''} ${s.fatherName||''} ${s.phone||''} ${s.whatsapp||''} ${s.aadhaarLast4||s.aadhaar||''}`.toLowerCase().includes(studentSearch.toLowerCase().trim()));
@@ -268,7 +269,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
  const nextClassOf=c=>{const i=classOrder.indexOf(String(c||'').trim());return i>=0&&i<classOrder.length-1?classOrder[i+1]:i===classOrder.length-1?'Passed Out':c;};
  const currentSessionStart=Number(String(year).slice(0,4))||2026;
  const suggestedNextSession=`${currentSessionStart+1}-${String(currentSessionStart+2).slice(-2)}`;
- const activeForPromotion=students.filter(st=>!st.passedOut&&st.status!=='Passed Out'&&classOrder.includes(String(st.className||'').trim())&&String(st.sessionPromotion?.to||'')!==newSession);
+ const activeForPromotion=students.filter(st=>isFinanceActiveStudent(st)&&classOrder.includes(String(st.className||'').trim())&&String(st.sessionPromotion?.to||'')!==newSession);
  const routeNames=[...new Set(students.map(st=>st.feeConfig?.vanRoute||st.vanRoute).filter(Boolean))].sort();
  const writeInChunks=async operations=>{for(let i=0;i<operations.length;i+=400){const batch=writeBatch(db);operations.slice(i,i+400).forEach(op=>op(batch));await batch.commit();}};
  const createNextSession=async()=>{
@@ -309,7 +310,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
  };
  const bulkUpdateClassFee=async e=>{
   e.preventDefault();if(year!==`${new Date().getFullYear()}-${String(new Date().getFullYear()+1).slice(-2)}`&&year!==suggestedNextSession)return setError('Bulk fee updates are allowed only for the current or next academic session. Old sessions are protected.');if(!feeUpdateClass||bulkSchoolFee===''||Number(bulkSchoolFee)<0)return setError('Select a class and enter the new monthly fee.');
-  const targets=students.filter(st=>String(st.className||'').trim()===feeUpdateClass&&!st.passedOut&&st.status!=='Passed Out');
+  const targets=students.filter(st=>String(st.className||'').trim()===feeUpdateClass&&isFinanceActiveStudent(st));
   if(!window.confirm(`Update Monthly School Fee for ${targets.length} students in Class ${feeUpdateClass} to ${money(bulkSchoolFee)} for ${year}? Previous session records will not be changed.`))return;
   setSessionBusy(true);setError('');
   try{
@@ -322,7 +323,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
  };
  const bulkUpdateRouteFee=async e=>{
   e.preventDefault();if(year!==`${new Date().getFullYear()}-${String(new Date().getFullYear()+1).slice(-2)}`&&year!==suggestedNextSession)return setError('Bulk fee updates are allowed only for the current or next academic session. Old sessions are protected.');if(!feeUpdateRoute||bulkVanFee===''||Number(bulkVanFee)<0)return setError('Select a route and enter the new van fee.');
-  const targets=students.filter(st=>(st.feeConfig?.vanRoute||st.vanRoute)===feeUpdateRoute&&(st.feeConfig?.transportOpted===true||st.feeConfig?.transportOpted==='Yes'||st.transportOpted===true||st.transportOpted==='Yes')&&!st.passedOut&&st.status!=='Passed Out'&&String(st.feeConfig?.academicYear||st.academicYear||'')===year);
+  const targets=students.filter(st=>(st.feeConfig?.vanRoute||st.vanRoute)===feeUpdateRoute&&(st.feeConfig?.transportOpted===true||st.feeConfig?.transportOpted==='Yes'||st.transportOpted===true||st.transportOpted==='Yes')&&isFinanceActiveStudent(st)&&String(st.feeConfig?.academicYear||st.academicYear||'')===year);
   if(!window.confirm(`Update Van Fee for ${targets.length} students on route ${feeUpdateRoute} to ${money(bulkVanFee)} per month for ${year}? Previous session records will not be changed.`))return;
   setSessionBusy(true);setError('');
   try{
