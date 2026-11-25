@@ -28,7 +28,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
   const unsubs=refs.map(([name,setter])=>onSnapshot(query(collection(db,name),where('schoolId','==',schoolId)),snap=>setter(snap.docs.map(d=>({id:d.id,...d.data()}))),e=>setError(e.message)));
   setLoading(false);return()=>unsubs.forEach(u=>u());
  },[schoolId]);
- const activeStudents=students.filter(s=>!s.passedOut&&s.status!=='Passed Out');
+ const activeStudents=students.filter(s=>!s.passedOut&&s.status!=='Passed Out'&&s.status!=='Transferred'&&s.status!=='Inactive');
  const collectionClasses=[...new Set(activeStudents.map(s=>String(s.className||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
  const collectionStudents=activeStudents.filter(s=>String(s.className||'').trim()===collectionClass);
  const searchableCollectionStudents=collectionStudents.filter(s=>`${s.name||''} ${s.admissionNo||''} ${s.penNumber||''} ${s.rollNo||''} ${s.rollNumber||''} ${s.fatherName||''} ${s.phone||''} ${s.whatsapp||''} ${s.aadhaarLast4||s.aadhaar||''}`.toLowerCase().includes(studentSearch.toLowerCase().trim()));
