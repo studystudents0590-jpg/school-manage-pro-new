@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { addDoc, collection, doc, onSnapshot, query, serverTimestamp, updateDoc, where, writeBatch, setDoc, getDoc } from 'firebase/firestore';
+import React, { useEffect, useRef, useState } from 'react';
+import { addDoc, collection, doc, onSnapshot, query, serverTimestamp, updateDoc, where, writeBatch, setDoc, getDoc, getDocs } from 'firebase/firestore';
 import { db } from './firebase';
 const money=n=>'₹'+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2});
 const inputStyle={width:'100%',padding:11,border:'1px solid #cbd5e1',borderRadius:8,boxSizing:'border-box',fontSize:14,background:'#fff'};
@@ -8,7 +8,8 @@ const primary={background:'#2457d6',color:'#fff',border:0,borderRadius:8,padding
 const secondary={background:'#eef2ff',color:'#1e40af',border:0,borderRadius:8,padding:'10px 13px',fontWeight:600,cursor:'pointer'};
 export default function FinanceModule({active,schoolId,schoolName,students,profile,onBack}){
  const [payments,setPayments]=useState([]),[structures,setStructures]=useState([]),[discounts,setDiscounts]=useState([]),[expenses,setExpenses]=useState([]);
- const [loading,setLoading]=useState(true),[error,setError]=useState(''),[message,setMessage]=useState('');
+ const [loading,setLoading]=useState(true),[error,setError]=useState(''),[message,setMessage]=useState(''),[paymentSaving,setPaymentSaving]=useState(false);
+ const paymentSavingRef=useRef(false);
  const [search,setSearch]=useState(''),[studentSearch,setStudentSearch]=useState(''),[year,setYear]=useState('2026-27'),[studentId,setStudentId]=useState(''),[feeType,setFeeType]=useState('Monthly School Fee'),[amount,setAmount]=useState(''),[paymentDate,setPaymentDate]=useState(new Date().toISOString().slice(0,10)),[method,setMethod]=useState('Cash'),[months,setMonths]=useState([]),[notes,setNotes]=useState('');
  const [className,setClassName]=useState(''),[collectionClass,setCollectionClass]=useState(''),[monthlyFee,setMonthlyFee]=useState(''),[admissionFee,setAdmissionFee]=useState(''),[vanFee,setVanFee]=useState(''),[renewalFee,setRenewalFee]=useState(''),[examFee,setExamFee]=useState(''),[otherFee,setOtherFee]=useState('');
  const [expenseTitle,setExpenseTitle]=useState(''),[expenseAmount,setExpenseAmount]=useState(''),[expenseDate,setExpenseDate]=useState(new Date().toISOString().slice(0,10));
@@ -195,6 +196,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
  const receiptCard=p=>p&&<div style={{border:'2px solid #1e3a8a',borderRadius:14,padding:16,margin:'16px 0',background:'#fff',boxShadow:'0 8px 24px rgba(15,23,42,.08)'}}><div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'center',flexWrap:'wrap'}}><div><div style={{fontSize:22,fontWeight:800,color:'#1e3a8a'}}>{schoolName||'School Manager Pro'}</div><div style={{fontSize:12,letterSpacing:1.5,color:'#64748b'}}>OFFICIAL FEE RECEIPT</div></div><span style={{padding:'7px 16px',border:'2px solid #16a34a',borderRadius:8,color:'#15803d',fontWeight:800}}>PAID</span></div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))',gap:8,background:'#f8fafc',padding:12,borderRadius:8,marginTop:14,fontSize:13}}><div><b>Receipt No.</b><br/>{p.receiptNo}</div><div><b>Date</b><br/>{p.paymentDate}</div><div><b>Session</b><br/>{p.academicYear||year}</div></div><h4 style={{margin:'16px 0 8px',color:'#1e3a8a'}}>Student Details</h4><div style={{fontSize:14,lineHeight:1.8}}><b>{p.studentName}</b><br/>Admission No: {p.admissionNo||'—'} · Class: {p.className||'—'}</div><h4 style={{margin:'14px 0 8px',color:'#1e3a8a'}}>Payment Details</h4><div style={{width:'100%',overflow:'hidden'}}><div style={{fontSize:12}}>{renderTable(['Fee Description','Month(s)','Payment Mode','Amount'],receiptItems(p).map(x=>[x.feeType,x.months||'—',p.paymentMode,money(x.amount)]))}</div></div><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:'#eff6ff',padding:14,borderRadius:8,marginTop:12}}><b>Amount Received</b><strong style={{fontSize:24,color:'#1e3a8a'}}> {money(receiptTotal(p))}</strong></div>{includeRemainingFees&&<div style={{marginTop:12}}><h4 style={{color:'#1e3a8a',marginBottom:6}}>Remaining Fee Details</h4>{receiptRemaining(p).groups.map(g=><div style={{padding:'5px 0',borderBottom:'1px solid #e2e8f0',fontSize:13}}><div style={{display:'flex',justifyContent:'space-between',gap:8}}><b>{g.type}</b><b>{money(g.amount)}</b></div><div style={{fontSize:12,color:'#64748b',marginTop:2}}>{g.months.map(x=>`${x.month} ${money(x.amount)}`).join(' · ')}</div></div>)}<div style={{display:'flex',justifyContent:'space-between',marginTop:8,fontWeight:800}}>Total Remaining <span>{money(receiptRemaining(p).grand)}</span></div></div>}{p.notes&&<p style={{fontSize:13,color:'#475569'}}>Notes: {p.notes}</p>}<label style={{display:'flex',alignItems:'center',gap:8,marginTop:16,padding:10,background:'#f8fafc',borderRadius:8,fontWeight:700}}><input type="checkbox" checked={includeRemainingFees} onChange={e=>setIncludeRemainingFees(e.target.checked)}/> Parents को Remaining Fees भी भेजें (बकाया फीस शामिल करें)</label><div style={{fontSize:12,color:'#64748b',marginTop:4}}>OFF: Parents को केवल जमा फीस जाएगी। ON: जमा फीस के साथ वर्तमान बाकी फीस और महीनों का विवरण भी जाएगा। यह विकल्प Share, Send, PDF, Print और Copy सभी पर लागू है।</div><div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:14}}><button style={secondary} onClick={()=>receiptPrint(p,includeRemainingFees)}>Download PDF</button><button style={secondary} onClick={()=>receiptPrint(p,includeRemainingFees)}>Print</button><button style={secondary} onClick={()=>shareReceipt(p,includeRemainingFees)}>Share with Parents</button><button style={secondary} onClick={()=>copyReceipt(p,includeRemainingFees)}>Copy for Parents</button></div></div>;
  const savePayment=async e=>{
   e.preventDefault();
+  if(paymentSavingRef.current)return;
   if(!schoolId||!collectionClass)return setError('Select a class first.');
   if(!selectedStudent)return setError('Select a student from the selected class.');
   const n=Number(amount);
@@ -209,8 +211,20 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
    if(!vanMonths.length)return setError('Select Van Fee month(s), or turn off combined collection.');
    if(vanMonths.some(m=>!eligibleVanMonths.includes(m)||vanPaidMonths.includes(m)))return setError('One or more selected Van Fee months are not eligible or already paid.');
   }
+  paymentSavingRef.current=true;setPaymentSaving(true);
   try{
    setError('');
+   // Refresh this school's payment records from Firestore before saving, so stale UI data cannot silently allow a repeated monthly payment.
+   const freshSnapshot=await getDocs(query(collection(db,'feePayments'),where('schoolId','==',schoolId)));
+   const freshPayments=freshSnapshot.docs.map(d=>({id:d.id,...d.data()})).filter(p=>p.status!=='cancelled'&&p.studentId===selectedStudent.id&&String(p.academicYear||'')===String(year));
+   const itemsToCheck=[{feeType,months:months.join(', ')}];
+   if(includeVanTogether)itemsToCheck.push({feeType:'Monthly Van Fee',months:vanMonths.join(', ')});
+   for(const item of itemsToCheck){
+    if(item.feeType!=='Monthly School Fee'&&item.feeType!=='Monthly Van Fee')continue;
+    const alreadyPaid=new Set(freshPayments.filter(p=>p.feeType===item.feeType).flatMap(p=>String(p.months||'').split(',').map(x=>x.trim()).filter(Boolean)));
+    const duplicateMonths=String(item.months||'').split(',').map(x=>x.trim()).filter(m=>m&&alreadyPaid.has(m));
+    if(duplicateMonths.length)throw new Error(`${item.feeType}: ${duplicateMonths.join(', ')} already paid. Refresh the page and select unpaid months only.`);
+   }
    const receiptNo=`R-${Date.now()}`;
    const common={schoolId,studentId:selectedStudent.id,studentName:selectedStudent.name||'',admissionNo:selectedStudent.admissionNo||'',className:selectedStudent.className||'',paymentDate,academicYear:year,paymentMode:method,notes:notes.trim(),receiptNo,status:'paid',createdBy:profile?.displayName||profile?.email||''};
    const items=[{feeType,amount:n,months:months.join(', ')}];
@@ -221,6 +235,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
    setViewReceipt(receipt);setIncludeRemainingFees(false);setIncludeVanTogether(false);setVanMonths([]);setAmount('');setMonths([]);setNotes('');
    setMessage(`Payment saved successfully. One combined receipt: ${receiptNo}`);
   }catch(e){setError(e.message);}
+  finally{paymentSavingRef.current=false;setPaymentSaving(false);}
  };
  const paymentActor=profile?.displayName||profile?.email||'School Admin';
  const correctPayment=async p=>{
@@ -391,7 +406,7 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
      {monthlyFeeType&&<div style={{gridColumn:'1/-1'}}><div style={labelStyle}>{feeType==='Monthly School Fee'?'School Fee Months':`Van Fee Months (starts ${vanStartMonth})`} (Paid months cannot be selected)</div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(105px,1fr))',gap:8}}>{eligibleMonths.map(m=>{const locked=paidMonths.includes(m);const checked=months.includes(m);return <label key={m} style={{display:'flex',alignItems:'center',gap:6,padding:9,border:'1px solid #cbd5e1',borderRadius:8,background:locked?'#ecfdf5':checked?'#eff6ff':'#fff',opacity:locked ? 0.7 : 1}}><input type="checkbox" disabled={locked} checked={locked||checked} onChange={()=>toggleMonth(m)}/><span>{m}{locked?' ✓ Paid':''}</span></label>})}</div></div>}
      {feeType==='Monthly School Fee'&&studentHasVan(selectedStudent)&&<div style={{gridColumn:'1/-1',border:'1px solid #cbd5e1',borderRadius:9,padding:10}}><label style={{display:'flex',gap:8,alignItems:'center',fontWeight:700}}><input type="checkbox" checked={includeVanTogether} onChange={e=>{setIncludeVanTogether(e.target.checked);setVanMonths([]);}}/> Collect Van Fee together in the same receipt</label>{includeVanTogether&&<div style={{marginTop:10}}><div style={labelStyle}>Van Fee Months (starts {vanStartMonth}; already-paid months cannot be selected)</div><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(105px,1fr))',gap:7}}>{eligibleVanMonths.map(m=>{const locked=vanPaidMonths.includes(m);const checked=vanMonths.includes(m);return <label key={m} style={{display:'flex',alignItems:'center',gap:6,padding:8,border:'1px solid #cbd5e1',borderRadius:8,background:locked?'#ecfdf5':checked?'#eff6ff':'#fff',opacity:locked ? 0.7 : 1}}><input type="checkbox" disabled={locked} checked={locked||checked} onChange={()=>setVanMonths(old=>old.includes(m)?old.filter(x=>x!==m):[...old,m])}/><span>{m}{locked?' ✓ Paid':''}</span></label>})}</div><div style={{fontSize:12,color:'#64748b',marginTop:7}}>Van Fee: {money(feeAmountFor(selectedStudent,'Monthly Van Fee'))} per month · Selected: {vanMonths.length} month(s) · {money(vanMonths.length*feeAmountFor(selectedStudent,'Monthly Van Fee'))}</div></div>}</div>}
      <label style={labelStyle}>Notes<input style={inputStyle} value={notes} onChange={e=>setNotes(e.target.value)}/></label>
-     <button style={primary}>Save Payment & Create Receipt</button>
+     <button type="submit" style={{...primary,opacity:paymentSaving?0.65:1}} disabled={paymentSaving}>{paymentSaving?'Saving Payment...':'Save Payment & Create Receipt'}</button>
     </form>
     {viewReceipt&&receiptCard(viewReceipt)}
     {selectedStudent&&feeSummary&&<div style={{border:'1px solid #cbd5e1',borderRadius:12,padding:14,margin:'14px 0',background:'#f8fafc'}}>
