@@ -3,3 +3,12 @@
 .finance-workspace{min-width:0}.finance-card{background:#fff;border:1px solid #e4eaf2;border-radius:13px;padding:18px;margin-top:14px}.finance-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.finance-card label{display:block;font-size:13px;font-weight:650;color:#40516b}.finance-card input,.finance-card select{display:block;width:100%;margin-top:6px;padding:11px;border:1px solid #d9e2ee;border-radius:8px;background:#fff;min-width:0}.finance-label{display:block;margin:18px 0 9px;font-size:13px}.month-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.month-option{display:flex!important;align-items:center;gap:7px;border:1px solid #dce5ef;border-radius:8px;padding:9px;background:#f9fbfe;font-size:12px!important}.month-option input{width:auto!important;margin:0!important}.month-paid{background:#eaf8ef;border-color:#b9e4c8;color:#187744!important}.muted{color:#718096;font-size:12px}.finance-full{margin-top:14px}.finance-save{background:#2457d6;color:#fff;margin-top:15px}.finance-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.finance-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:15px}.finance-stats>div{padding:13px;border:1px solid #e5ebf3;border-radius:9px}.finance-stats small{display:block;color:#718096}.finance-stats strong{display:block;margin-top:6px;font-size:20px}.finance-card .table-wrap{margin-top:12px}
 @media(max-width:620px){.finance-grid{grid-template-columns:1fr}.month-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.finance-stats{grid-template-columns:1fr}.finance-card{padding:12px}}
 @media print{.sidebar,.top,.back,.finance-actions,.finance-save{display:none!important}.content{padding:0}.finance-card{border:0}}
+
+/* Responsive shell fix: prevent desktop-width sidebar on tablet/mobile */
+@media (max-width: 900px){
+  .shell{display:block;width:100%;min-width:0}
+  .sidebar{width:100%;max-width:none;max-height:245px;position:relative;top:auto;padding:10px;display:block}
+  .main{width:100%;min-width:0}
+  .top{width:100%;min-width:0}
+  .content{width:100%;max-width:none;margin:0;padding:12px}
+}
