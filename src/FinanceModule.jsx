@@ -7,6 +7,7 @@ const labelStyle={display:'block',fontWeight:600,fontSize:13,color:'#334155',mar
 const primary={background:'#2457d6',color:'#fff',border:0,borderRadius:8,padding:'10px 15px',fontWeight:700,cursor:'pointer'};
 const secondary={background:'#eef2ff',color:'#1e40af',border:0,borderRadius:8,padding:'10px 13px',fontWeight:600,cursor:'pointer'};
 export default function FinanceModule({active,schoolId,schoolName,students,profile,onBack}){
+ const todayLocal=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
  const [payments,setPayments]=useState([]),[structures,setStructures]=useState([]),[discounts,setDiscounts]=useState([]),[expenses,setExpenses]=useState([]);
  const [loading,setLoading]=useState(true),[error,setError]=useState(''),[message,setMessage]=useState(''),[paymentSaving,setPaymentSaving]=useState(false);
  const paymentSavingRef=useRef(false);
@@ -18,7 +19,6 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
  const [reportSearch,setReportSearch]=useState(''),[reportClass,setReportClass]=useState('All Classes'),[reportMonth,setReportMonth]=useState('All Months'),[reportFeeType,setReportFeeType]=useState('All Fee Types'),[reportMode,setReportMode]=useState('All Modes');
  const [reportPeriod,setReportPeriod]=useState('Yearly'),[reportDay,setReportDay]=useState(todayLocal()),[reportMonthKey,setReportMonthKey]=useState(todayLocal().slice(0,7)),[reportFrom,setReportFrom]=useState(`${year.slice(0,4)}-04-01`),[reportTo,setReportTo]=useState(todayLocal());
  const [viewReceipt,setViewReceipt]=useState(null),[includeRemainingFees,setIncludeRemainingFees]=useState(false),[includeVanTogether,setIncludeVanTogether]=useState(false),[vanMonths,setVanMonths]=useState([]);
- const todayLocal=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
  const [receiptPeriod,setReceiptPeriod]=useState('Daily'),[receiptDay,setReceiptDay]=useState(todayLocal()),[receiptMonth,setReceiptMonth]=useState(todayLocal().slice(0,7)),[receiptYear,setReceiptYear]=useState(year),[receiptClass,setReceiptClass]=useState('All Classes');
  const [duesClass,setDuesClass]=useState('All Classes'),[duesMonth,setDuesMonth]=useState('All Months'),[duesStudentId,setDuesStudentId]=useState(''),[duesSummaryMode,setDuesSummaryMode]=useState('Class-wise');
  const [ledgerClass,setLedgerClass]=useState('All Classes'),[ledgerSearch,setLedgerSearch]=useState(''),[ledgerStudentId,setLedgerStudentId]=useState('');
