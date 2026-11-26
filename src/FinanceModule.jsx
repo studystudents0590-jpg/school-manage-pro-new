@@ -639,7 +639,30 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
   });
   const byType=feeTypes.map(t=>{const paidAmt=reportFiltered.filter(p=>p.feeType===t).reduce((a,p)=>a+Number(p.amount||0),0);const dueAmt=yearSummary.reduce((a,x)=>a+x.d.lines.filter(l=>l.type===t||((t==='Monthly Van Fee')&&l.type==='Van Fee')).reduce((b,l)=>b+Number(l.amount||0),0),0);return {t,paidAmt,dueAmt,remaining:Math.max(0,dueAmt),percent:pct(paidAmt,paidAmt+dueAmt)};});
   const byMode=paymentModes.map(m=>[m,money(reportFiltered.filter(p=>String(p.paymentMode||'').toLowerCase()===m.toLowerCase()).reduce((a,p)=>a+Number(p.amount||0),0))]);
-  const byClass=collectionClasses.map(c=>{const rows=reportFiltered.filter(p=>String(p.className||'')===c);const school=rows.filter(p=>p.feeType==='Monthly School Fee').reduce((a,p)=>a+Number(p.amount||0),0);const van=rows.filter(p=>p.feeType==='Monthly Van Fee').reduce((a,p)=>a+Number(p.amount||0),0);const total=rows.reduce((a,p)=>a+Number(p.amount||0),0);const yr=yearClassRows.find(x=>x.c===c);return {c,school,van,total,due:yr?.due||0,remaining:yr?.due||0,percent:pct(yr?.totalPaid||0,(yr?.totalPaid||0)+(yr?.due||0))};});
+  const byClass=collectionClasses.map(c=>{
+   const classRows=yearSummary.filter(x=>String(x.st.className||'')===c);
+   const schoolDue=classRows.reduce((a,x)=>a+x.d.lines.filter(l=>l.type==='Monthly School Fee').reduce((b,l)=>b+Number(l.amount||0),0),0);
+   const vanDue=classRows.reduce((a,x)=>a+x.d.lines.filter(l=>l.type==='Van Fee'||l.type==='Monthly Van Fee').reduce((b,l)=>b+Number(l.amount||0),0),0);
+   const rows=reportFiltered.filter(p=>String(p.className||'')===c);
+   const schoolPaid=rows.filter(p=>p.feeType==='Monthly School Fee').reduce((a,p)=>a+Number(p.amount||0),0);
+   const vanPaid=rows.filter(p=>p.feeType==='Monthly Van Fee').reduce((a,p)=>a+Number(p.amount||0),0);
+   const allYearRows=activePayments.filter(p=>(p.academicYear===year||(!p.academicYear&&String(p.paymentDate||'')>=sessionStartDate&&String(p.paymentDate||'')<=sessionEndDate))&&String(p.className||'')===c);
+   const schoolYearPaid=allYearRows.filter(p=>p.feeType==='Monthly School Fee').reduce((a,p)=>a+Number(p.amount||0),0);
+   const vanYearPaid=allYearRows.filter(p=>p.feeType==='Monthly Van Fee').reduce((a,p)=>a+Number(p.amount||0),0);
+   const schoolTotal=schoolYearPaid+schoolDue,vanTotal=vanYearPaid+vanDue;
+   const totalDue=schoolTotal+vanTotal,totalPaid=schoolYearPaid+vanYearPaid,totalRemaining=schoolDue+vanDue;
+   return {c,schoolDue,schoolPaid:schoolYearPaid,schoolRemaining:schoolDue,schoolTotal,schoolPercent:pct(schoolYearPaid,schoolTotal),vanDue,vanPaid:vanYearPaid,vanRemaining:vanDue,vanTotal,vanPercent:pct(vanYearPaid,vanTotal),totalDue,totalPaid,totalRemaining,totalPercent:pct(totalPaid,totalDue)};
+  });
+  const feeAlertByClass=collectionClasses.map(c=>{
+   const rows=yearSummary.filter(x=>String(x.st.className||'')===c).map(({st,d})=>{
+    const schoolRemaining=d.lines.filter(l=>l.type==='Monthly School Fee').reduce((a,l)=>a+Number(l.amount||0),0);
+    const vanRemaining=d.lines.filter(l=>l.type==='Van Fee'||l.type==='Monthly Van Fee').reduce((a,l)=>a+Number(l.amount||0),0);
+    const paid=activePayments.filter(p=>p.studentId===st.id&&(p.academicYear===year||(!p.academicYear&&String(p.paymentDate||'')>=sessionStartDate&&String(p.paymentDate||'')<=sessionEndDate))&&(p.feeType==='Monthly School Fee'||p.feeType==='Monthly Van Fee')).reduce((a,p)=>a+Number(p.amount||0),0);
+    const remaining=schoolRemaining+vanRemaining,total=paid+remaining,remainingPercent=total>0?Math.round(remaining/total*100):0;
+    return {st,schoolRemaining,vanRemaining,paid,remaining,total,remainingPercent};
+   }).filter(x=>x.total>0&&x.remainingPercent>20);
+   return {c,rows};
+  }).filter(x=>x.rows.length);
   const monthlyRows=monthNames.map(m=>{const rows=reportFiltered.filter(p=>String(p.months||'').split(',').map(x=>x.trim()).includes(m));const school=rows.filter(p=>p.feeType==='Monthly School Fee').reduce((a,p)=>a+Number(p.amount||0),0);const van=rows.filter(p=>p.feeType==='Monthly Van Fee').reduce((a,p)=>a+Number(p.amount||0),0);const total=rows.reduce((a,p)=>a+Number(p.amount||0),0);const y=yearMonthlyRows.find(x=>x.m===m);return {m,school,van,total,due:y?.due||0,remaining:y?.remaining||0,percent:pct(y?.paid||0,y?.due||0)};});
   const pendingStudents=yearSummary.filter(x=>x.d.grand>0);
   const todayPayments=activePayments.filter(p=>String(p.paymentDate||'')===today);
@@ -671,7 +694,21 @@ export default function FinanceModule({active,schoolId,schoolName,students,profi
    <div style={statsGrid}><div className="stat"><small>Period Collection</small><strong>{money(periodPaid)}</strong></div><div className="stat"><small>Period Expenses</small><strong>{money(expenseTotal)}</strong></div><div className="stat"><small>Net Balance</small><strong style={{color:netBalance<0?'#b91c1c':'#15803d'}}>{money(netBalance)}</strong></div><div className="stat"><small>Payment Entries</small><strong>{reportFiltered.length}</strong></div><div className="stat"><small>Year Remaining</small><strong>{money(yearPending)}</strong></div></div>
    <div style={formGrid}><label style={labelStyle}>Class<select style={inputStyle} value={reportClass} onChange={e=>setReportClass(e.target.value)}><option>All Classes</option>{collectionClasses.map(c=><option key={c}>{c}</option>)}</select></label><label style={labelStyle}>Month Tag<select style={inputStyle} value={reportMonth} onChange={e=>setReportMonth(e.target.value)}><option>All Months</option>{monthNames.map(m=><option key={m}>{m}</option>)}</select></label><label style={labelStyle}>Fee Type<select style={inputStyle} value={reportFeeType} onChange={e=>setReportFeeType(e.target.value)}><option>All Fee Types</option>{feeTypes.map(t=><option key={t}>{t}</option>)}</select></label><label style={labelStyle}>Payment Mode<select style={inputStyle} value={reportMode} onChange={e=>setReportMode(e.target.value)}><option>All Modes</option>{paymentModes.map(m=><option key={m}>{m}</option>)}</select></label></div>
    <input style={{...inputStyle,maxWidth:520}} value={reportSearch} onChange={e=>setReportSearch(e.target.value)} placeholder="Search student / admission / receipt / class / fee type / mode"/>
-   <h3>Class-wise Collection · {reportPeriod}</h3>{renderTable(['Class','School Fee Paid','Van Fee Paid','Period Total','Session Remaining'],byClass.map(x=>[x.c,money(x.school),money(x.van),money(x.total),money(x.remaining)]))}
+   <h3>Class-wise Fee Summary · {year}</h3>
+   {byClass.map(x=><div key={x.c} className="finance-card" style={{padding:13,marginBottom:10,border:'1px solid #e2e8f0',borderRadius:10,background:'#fff'}}>
+    <h4 style={{margin:'0 0 10px'}}>Class {x.c}</h4>
+    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(190px,1fr))',gap:10}}>
+     <div style={{padding:10,background:'#f8fafc',borderRadius:8}}><b>School Fee</b><div>Total Fee: {money(x.schoolTotal)}</div><div>Paid: {money(x.schoolPaid)}</div><div>Remaining: {money(x.schoolRemaining)}</div>{bar(x.schoolTotal-x.schoolRemaining,x.schoolTotal)}</div>
+     <div style={{padding:10,background:'#f8fafc',borderRadius:8}}><b>Van Fee</b><div>Total Fee: {money(x.vanTotal)}</div><div>Paid: {money(x.vanTotal-x.vanRemaining)}</div><div>Remaining: {money(x.vanRemaining)}</div>{bar(x.vanTotal-x.vanRemaining,x.vanTotal)}</div>
+     <div style={{padding:10,background:'#f1f5f9',borderRadius:8}}><b>School + Van Total</b><div>Total Fee: {money(x.totalDue)}</div><div>Paid: {money(x.totalPaid)}</div><div>Remaining: {money(x.totalRemaining)}</div>{bar(x.totalPaid,x.totalDue)}</div>
+    </div>
+   </div>)}
+   <h3>Students with More Than 20% Fees Pending · {year}</h3>
+   <p className="muted">Class-wise list of students whose remaining School Fee + Van Fee is more than 20% of their total fees.</p>
+   {feeAlertByClass.length?feeAlertByClass.map(group=><div key={group.c} className="finance-card" style={{padding:12,marginBottom:10,border:'1px solid #fecaca',borderRadius:10,background:'#fff'}}>
+    <h4 style={{margin:'0 0 8px'}}>Class {group.c} · {group.rows.length} Students</h4>
+    {renderTable(['Student','School Pending','Van Pending','Total Pending','Pending %'],group.rows.map(x=>[x.st.name,money(x.schoolRemaining),money(x.vanRemaining),money(x.remaining),bar(x.remaining,x.total)]))}
+   </div>):<p className="muted">No students have more than 20% fees pending.</p>}
    <h3>Month-wise Collection · {reportPeriod}</h3>{renderTable(['Month','School Due','School Paid','Van Due','Van Paid','Total Due','Total Paid','Remaining','Progress'],monthlyRows.map(x=>[x.m,money(yearMonthlyRows.find(y=>y.m===x.m)?.schoolDue||0),money(x.school),money(yearMonthlyRows.find(y=>y.m===x.m)?.vanDue||0),money(x.van),money(x.due),money(yearMonthlyRows.find(y=>y.m===x.m)?.paid||0),money(x.remaining),bar(yearMonthlyRows.find(y=>y.m===x.m)?.paid||0,x.due)]))}
    <h3>Fee Category-wise Collection · {reportPeriod}</h3>{renderTable(['Fee Category','Collected','Estimated Remaining','Progress'],byType.map(x=>[x.t,money(x.paidAmt),money(x.dueAmt),bar(x.paidAmt,x.paidAmt+x.dueAmt)]))}
    <h3>Payment Mode-wise Collection</h3>{renderTable(['Payment Mode','Collected'],byMode)}
