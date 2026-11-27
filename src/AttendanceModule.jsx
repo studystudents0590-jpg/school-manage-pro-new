@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { collection, doc, getDocs, query, where, writeBatch, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
+import { getClassOptionsWithLegacy, getClassLabel } from './classSystem';
 
 const today = () => {
   const d = new Date();
@@ -58,7 +59,7 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
   const canReviewApplication = isSchoolAdmin;
 
   const activeStudents=useMemo(()=>students.filter(s=>!['inactive','left','transferred','deleted'].includes(String(s.status||'').toLowerCase()) && s.isActive!==false),[students]);
-  const classOptions=useMemo(()=>[...new Set(activeStudents.map(s=>String(s.className||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),[activeStudents]);
+  const classOptions=useMemo(()=>getClassOptionsWithLegacy(activeStudents.map(s=>s.className)).map(option=>option.value),[activeStudents]);
   useEffect(()=>{if(!className&&classOptions.length)setClassName(classOptions[0]);else if(className&&!classOptions.includes(className))setClassName(classOptions[0]||'');},[classOptions,className]);
   const sectionOptions=useMemo(()=>[...new Set(activeStudents.filter(s=>s.className===className).map(s=>s.section).filter(Boolean))].sort(),[activeStudents,className]);
   useEffect(()=>{if(section!=='All Sections'&&!sectionOptions.includes(section))setSection('All Sections');},[sectionOptions,section]);
@@ -242,7 +243,7 @@ export default function AttendanceModule({schoolId,schoolName,profile,students=[
     <div style={styles.panel}>
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12}}>
         {view!=='overview'&&<label style={{fontSize:13,fontWeight:600}}>Attendance Date<input type="date" value={date} onChange={e=>{setDate(e.target.value);setReportReady(false);}} style={{...styles.field,display:'block',marginTop:6}}/></label>}
-        {view==='mark'&&<label style={{fontSize:13,fontWeight:600}}>Class<select value={className} onChange={e=>setClassName(e.target.value)} style={{...styles.field,display:'block',marginTop:6}}><option value="">Select Class</option>{classOptions.map(c=><option key={c}>{c}</option>)}</select></label>}
+        {view==='mark'&&<label style={{fontSize:13,fontWeight:600}}>Class<select value={className} onChange={e=>setClassName(e.target.value)} style={{...styles.field,display:'block',marginTop:6}}><option value="">Select Class</option>{classOptions.map(c=><option key={c} value={c}>{getClassLabel(c)}</option>)}</select></label>}
         {view==='mark'&&<label style={{fontSize:13,fontWeight:600}}>Section<select value={section} onChange={e=>setSection(e.target.value)} style={{...styles.field,display:'block',marginTop:6}}><option>All Sections</option>{sectionOptions.map(s=><option key={s}>{s}</option>)}</select></label>}
         {view==='mark'&&<label style={{fontSize:13,fontWeight:600}}>Search Student<input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Name / Admission No." style={{...styles.field,display:'block',marginTop:6}}/></label>}
       </div>
