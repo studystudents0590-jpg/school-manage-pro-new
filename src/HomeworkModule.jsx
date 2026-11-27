@@ -10,7 +10,7 @@ const card={background:'#fff',border:'1px solid #e2e8f0',borderRadius:13,padding
 const split=(v)=>Array.isArray(v)?v:String(v||'').split(/[,;\n]+/).map(x=>x.trim()).filter(Boolean);
 const err=e=>e?.code==='permission-denied'?'Firebase permission denied. Firestore/Storage rules must allow this school-scoped Homework operation.':e?.message||'Something went wrong.';
 export default function HomeworkModule({schoolId,schoolName,profile,students=[],isTeacher=false,isParent=false,onBack}){
- const [assignments,setAssignments]=useState([]),[linked,setLinked]=useState([]),[subs,setSubs]=useState([]),[teachers,setTeachers]=useState([]);
+ const [assignments,setAssignments]=useState([]),[linked,setLinked]=useState([]),[subs,setSubs]=useState([]),[teachers,setTeachers]=useState([]),[schoolSubjects,setSchoolSubjects]=useState([]),[activeSession,setActiveSession]=useState(null);
  const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
  const [tab,setTab]=useState(isParent?'My Homework':'Assignments'),[editing,setEditing]=useState(null),[selected,setSelected]=useState(null),[submissionText,setSubmissionText]=useState(''),[submissionFile,setSubmissionFile]=useState(null);
  const [form,setForm]=useState({title:'',className:'',section:'All Sections',subject:'',description:'',assignedDate:new Date().toISOString().slice(0,10),dueDate:'',attachmentUrl:'',attachmentName:''});
@@ -19,7 +19,14 @@ export default function HomeworkModule({schoolId,schoolName,profile,students=[],
  const teacherClasses=useMemo(()=>split(myTeacher.classes),[myTeacher.classes]);
  const teacherSubjects=useMemo(()=>split(myTeacher.subjects),[myTeacher.subjects]);
  const classNames=useMemo(()=>[...new Set(students.map(s=>s.className).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),[students]);
- const subjects=useMemo(()=>{const ss=students.filter(s=>s.className===form.className).flatMap(s=>Array.isArray(s.subjects)?s.subjects:[]);return [...new Set([...ss,...teacherSubjects].filter(Boolean))];},[students,form.className,teacherSubjects]);
+ const subjects=useMemo(()=>{const rows=schoolSubjects.filter(x=>x.className===form.className&&(x.status||'Active')==='Active'&&(!activeSession||x.sessionId===activeSession.id||x.sessionName===activeSession.name));const names=[...new Set(rows.map(x=>String(x.subjectName||'').trim()).filter(Boolean))];return isTeacher&&teacherSubjects.length?names.filter(n=>teacherSubjects.includes(n)):names;},[schoolSubjects,form.className,activeSession,isTeacher,teacherSubjects]);
+ useEffect(()=>{if(!schoolId){setSchoolSubjects([]);setActiveSession(null);return;}
+  if(isTeacher&&!teacherClasses.length){setSchoolSubjects([]);return;}
+  const subjectQuery=isTeacher?query(collection(db,'schoolSubjects'),where('schoolId','==',schoolId),where('className','in',teacherClasses.slice(0,30))):query(collection(db,'schoolSubjects'),where('schoolId','==',schoolId));
+  const unSubjects=onSnapshot(subjectQuery,snap=>setSchoolSubjects(snap.docs.map(d=>({id:d.id,...d.data()})).filter(x=>!x.configType)),e=>setError(err(e)));
+  const unSessions=onSnapshot(query(collection(db,'academicSessions'),where('schoolId','==',schoolId)),snap=>{const rows=snap.docs.map(d=>({id:d.id,...d.data()}));setActiveSession(rows.find(x=>x.status==='Active')||rows[0]||null);},e=>setError(err(e)));
+  return ()=>{unSubjects();unSessions();};
+ },[schoolId,isTeacher,teacherClasses.join('|')]);
  useEffect(()=>{if(!schoolId){setAssignments([]);setLoading(false);return;}
   setLoading(true);
   const q=query(collection(db,'homeworkAssignments'),where('schoolId','==',schoolId));
@@ -42,6 +49,7 @@ export default function HomeworkModule({schoolId,schoolName,profile,students=[],
   if(isTeacher)return assignments.filter(a=>(!teacherClasses.length||teacherClasses.includes(a.className))&&(!teacherSubjects.length||teacherSubjects.includes(a.subject)));
   return assignments;
  },[assignments,linked,isParent,isTeacher,teacherClasses,teacherSubjects]);
+ useEffect(()=>{if(form.subject&&!subjects.includes(form.subject))setForm(v=>({...v,subject:''}));},[subjects,form.subject]);
  const reset=()=>{setEditing(null);setForm({title:'',className:'',section:'All Sections',subject:'',description:'',assignedDate:new Date().toISOString().slice(0,10),dueDate:'',attachmentUrl:'',attachmentName:''});};
  const upload=async(file,folder)=>{
   if(!file)return null;
@@ -117,7 +125,7 @@ export default function HomeworkModule({schoolId,schoolName,profile,students=[],
    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:10}}>
     <label>Class<select required style={field} value={form.className} onChange={e=>setForm(v=>({...v,className:e.target.value,subject:''}))}><option value="">Select Class</option>{(isTeacher&&teacherClasses.length?teacherClasses:classNames).map(c=><option key={c}>{c}</option>)}</select></label>
     <label>Section<select style={field} value={form.section} onChange={e=>setForm(v=>({...v,section:e.target.value}))}><option>All Sections</option>{[...new Set(students.filter(s=>s.className===form.className).map(s=>s.section).filter(Boolean))].map(s=><option key={s}>{s}</option>)}</select></label>
-    <label>Subject<select required style={field} value={form.subject} onChange={e=>setForm(v=>({...v,subject:e.target.value}))}><option value="">Select Subject</option>{(isTeacher&&teacherSubjects.length?teacherSubjects:subjects).map(s=><option key={s}>{s}</option>)}</select></label>
+    <label>Subject<select required style={field} value={form.subject} onChange={e=>setForm(v=>({...v,subject:e.target.value}))}><option value="">Select Subject</option>{subjects.map(s=><option key={s}>{s}</option>)}</select></label>
     <label>Assigned Date<input required type="date" style={field} value={form.assignedDate} onChange={e=>setForm(v=>({...v,assignedDate:e.target.value}))}/></label>
     <label>Submission Date<input required type="date" style={field} value={form.dueDate} onChange={e=>setForm(v=>({...v,dueDate:e.target.value}))}/></label>
    </div>
