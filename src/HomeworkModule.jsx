@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useState} from 'react';
 import {addDoc,collection,deleteDoc,doc,onSnapshot,query,serverTimestamp,updateDoc,where} from 'firebase/firestore';
 import {getDownloadURL,ref,uploadBytes} from 'firebase/storage';
 import {auth,db,storage} from './firebase';
-import {CLASS_LIST,getClassOptionsWithLegacy} from './classSystem';
+import {CLASS_LIST,getClassOptionsWithLegacy,getClassLabel} from './classSystem';
 
 const field={width:'100%',padding:10,border:'1px solid #cbd5e1',borderRadius:9,boxSizing:'border-box',background:'#fff'};
 const btn={padding:'10px 14px',border:0,borderRadius:9,background:'#2457d6',color:'#fff',fontWeight:700,cursor:'pointer'};
@@ -82,7 +82,7 @@ export default function HomeworkModule({schoolId,schoolName,profile,students=[],
  };
  const startEdit=a=>{setEditing(a);setForm({title:a.title||'',className:a.className||'',section:a.section||'All Sections',subject:a.subject||'',description:a.description||'',assignedDate:a.assignedDate||'',dueDate:a.dueDate||'',attachmentUrl:a.attachmentUrl||'',attachmentName:a.attachmentName||''});setTab('Create Homework');};
  const shareWhatsApp=a=>{
-  const msg=`${schoolName||a.schoolName||'School'}\nHOMEWORK\nTitle: ${a.title}\nClass: ${a.className} ${a.section==='All Sections'?'':a.section}\nSubject: ${a.subject}\nAssigned: ${a.assignedDate}\nSubmission Date: ${a.dueDate}\n\n${a.description}${a.attachmentUrl?'\nAttachment: '+a.attachmentUrl:''}`;
+  const msg=`${schoolName||a.schoolName||'School'}\nHOMEWORK\nTitle: ${a.title}\nClass: ${getClassLabel(a.className)} ${a.section==='All Sections'?'':a.section}\nSubject: ${a.subject}\nAssigned: ${a.assignedDate}\nSubmission Date: ${a.dueDate}\n\n${a.description}${a.attachmentUrl?'\nAttachment: '+a.attachmentUrl:''}`;
   window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank','noopener,noreferrer');
  };
  const submitHomework=async e=>{
@@ -103,7 +103,7 @@ export default function HomeworkModule({schoolId,schoolName,profile,students=[],
  const myChildren=isParent?linked:students;
  const assignmentSubs=a=>subs.filter(s=>s.assignmentId===a.id);
  const assignmentCard=a=><article key={a.id} style={card}>
-  <div style={{display:'flex',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}><div><span style={{fontSize:12,color:'#64748b'}}>{a.className} · {a.section||'All Sections'} · {a.subject}</span><h3 style={{margin:'5px 0'}}>{a.title}</h3></div><span style={{fontSize:12,fontWeight:700,color:a.status==='Active'?'#047857':'#64748b'}}>{a.status||'Active'}</span></div>
+  <div style={{display:'flex',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}><div><span style={{fontSize:12,color:'#64748b'}}>{getClassLabel(a.className)} · {a.section||'All Sections'} · {a.subject}</span><h3 style={{margin:'5px 0'}}>{a.title}</h3></div><span style={{fontSize:12,fontWeight:700,color:a.status==='Active'?'#047857':'#64748b'}}>{a.status||'Active'}</span></div>
   <p style={{whiteSpace:'pre-wrap',margin:'8px 0'}}>{a.description}</p>
   <div style={{fontSize:13,color:'#64748b'}}>Assigned: {a.assignedDate||'—'} · Submit by: <b>{a.dueDate||'—'}</b></div>
   {a.attachmentUrl&&<p><a href={a.attachmentUrl} target="_blank" rel="noreferrer">📎 {a.attachmentName||'Open attachment'}</a></p>}
@@ -137,7 +137,7 @@ export default function HomeworkModule({schoolId,schoolName,profile,students=[],
    <label>Attach Photo / PDF / Document (Max 10 MB)<input id="homework-assignment-file" type="file" accept="image/*,.pdf,.doc,.docx" style={field}/>{form.attachmentName&&<small>Current: {form.attachmentName}</small>}</label>
    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button disabled={busy} style={btn}>{busy?'Saving…':editing?'Update Homework':'Assign Homework'}</button><button type="button" style={soft} onClick={reset}>Clear</button></div>
   </form>}
-  {submissionView&&<div style={card}><h3>Submissions – {submissionView.title}</h3>{assignmentSubs(submissionView).length?assignmentSubs(submissionView).map(s=><div key={s.id} style={{borderTop:'1px solid #e2e8f0',padding:'12px 0'}}><b>{s.studentName}</b> · {s.className} {s.section}<p>{s.text||'No written answer.'}</p>{s.attachmentUrl&&<p><a href={s.attachmentUrl} target="_blank" rel="noreferrer">📎 {s.attachmentName||'Open submission'}</a></p>}<p>Status: <b>{s.status}</b></p>{(isAdmin||isTeacher)&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button style={soft} onClick={()=>markSubmission(s,'Checked')}>Mark Checked</button><button style={soft} onClick={()=>markSubmission(s,'Needs Correction')}>Needs Correction</button></div>}</div>):<p className="pending">No submissions yet.</p>}<button style={soft} onClick={()=>setTab('Assignments')}>Back to Assignments</button></div>}
+  {submissionView&&<div style={card}><h3>Submissions – {submissionView.title}</h3>{assignmentSubs(submissionView).length?assignmentSubs(submissionView).map(s=><div key={s.id} style={{borderTop:'1px solid #e2e8f0',padding:'12px 0'}}><b>{s.studentName}</b> · {getClassLabel(s.className)} {s.section}<p>{s.text||'No written answer.'}</p>{s.attachmentUrl&&<p><a href={s.attachmentUrl} target="_blank" rel="noreferrer">📎 {s.attachmentName||'Open submission'}</a></p>}<p>Status: <b>{s.status}</b></p>{(isAdmin||isTeacher)&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button style={soft} onClick={()=>markSubmission(s,'Checked')}>Mark Checked</button><button style={soft} onClick={()=>markSubmission(s,'Needs Correction')}>Needs Correction</button></div>}</div>):<p className="pending">No submissions yet.</p>}<button style={soft} onClick={()=>setTab('Assignments')}>Back to Assignments</button></div>}
   {selected&&<div style={{...card,border:'2px solid #2457d6'}}><h3>Submit Homework – {selected.title}</h3><p>{selected.studentId&&myChildren.find(s=>s.id===selected.studentId)?.name}</p><form onSubmit={submitHomework} style={{display:'grid',gap:10}}><label>Answer / Notes<textarea rows="4" style={field} value={submissionText} onChange={e=>setSubmissionText(e.target.value)} placeholder="Write your answer or note…"/></label><label>Upload Homework Photo / PDF<input type="file" accept="image/*,.pdf" style={field} onChange={e=>setSubmissionFile(e.target.files?.[0]||null)}/></label><button style={btn} disabled={busy}>{busy?'Submitting…':'Submit Homework'}</button><button type="button" style={soft} onClick={()=>setSelected(null)}>Cancel</button></form></div>}
   <p style={{fontSize:12,color:'#64748b',marginTop:16}}>WhatsApp opens a prepared message. Review the class/parent recipient and send it. The app stores homework and submissions separately for each school.</p>
  </section>;
