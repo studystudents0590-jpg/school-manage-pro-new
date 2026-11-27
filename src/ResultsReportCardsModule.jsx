@@ -115,7 +115,31 @@ export default function ResultsReportCardsModule({schoolId,schoolName,profile,st
  };
  const printFullCard=student=>{const w=window.open('','_blank');if(!w){setError('Allow pop-ups to preview or print the report card.');return;}w.document.open();w.document.write(reportCardHtml(student));w.document.close();};
  const copyFullCard=async student=>{const {byExam}=getStudentReport(student);const lines=[`IQRA PUBLIC SCHOOL - ${student.name}`,`Class: ${student.className}`,`Admission No: ${student.admissionNo||'—'}`];examsForSession.forEach(ex=>{const list=byExam[ex.id]||[];const got=list.reduce((a,x)=>a+(!x.absent?Number(x.obtained||0):0),0);const max=list.reduce((a,x)=>a+Number(x.maximum||0),0);lines.push(`${ex.name}: ${got}/${max}`);});try{await navigator.clipboard.writeText(lines.join('\n'));setNotice('Report summary copied.');}catch{setError('Copy is not supported in this browser.');}};
- const shareFullCard=async student=>{const html=reportCardHtml(student);const safeName=String(student.name||'Student').trim().replace(/[^a-z0-9_-]+/gi,'_');const session=String(activeExam?.session||'').replace(/[^a-z0-9_-]+/gi,'_');const fileName=`${safeName}_Progress_Report_${session||'Result'}.html`;try{const file=new File([html],fileName,{type:'text/html;charset=utf-8'});if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({title:`${student.name} Progress Report`,text:`Complete Progress Report Card · ${student.name} · ${student.className} · ${activeExam?.session||''}`,files:[file]});setNotice('Complete report card shared as an attached file.');return;}const url=URL.createObjectURL(new Blob([html],{type:'text/html;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=fileName;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);setNotice('Complete report downloaded. Open it in Chrome and use Print / Save as PDF, then share the PDF on WhatsApp.');}catch(e){if(e.name!=='AbortError')setError(e?.message||'Could not share the complete report. Please use Preview / Print / Save PDF.');}};
+ const shareFullCard=async student=>{
+  try{
+   // Share the actual generated report file. Never share the preview window URL (about:blank).
+   const html=reportCardHtml(student);
+   const safeName=String(student.name||'Student').trim().replace(/[^a-z0-9_-]+/gi,'_')||'Student';
+   const session=String(activeExam?.session||'Result').trim().replace(/[^a-z0-9_-]+/gi,'_')||'Result';
+   const fileName=`${safeName}_Progress_Report_${session}.html`;
+   const file=new File([html],fileName,{type:'text/html;charset=utf-8'});
+   if(navigator.share && (!navigator.canShare || navigator.canShare({files:[file]}))){
+    await navigator.share({title:`${safeName} Progress Report`,files:[file]});
+    setNotice('Complete report file shared. It contains the full report card.');
+    return;
+   }
+   // Browsers without file-sharing support: download the complete report instead of sharing blank text.
+   const blob=new Blob([html],{type:'text/html;charset=utf-8'});
+   const url=URL.createObjectURL(blob);
+   const a=document.createElement('a');a.href=url;a.download=fileName;a.style.display='none';
+   document.body.appendChild(a);a.click();a.remove();
+   window.setTimeout(()=>URL.revokeObjectURL(url),10000);
+   setNotice('Complete report downloaded as an HTML file. Open this file and use Print / Save as PDF, then share the saved PDF from your phone.');
+  }catch(e){
+   if(e?.name==='AbortError')return;
+   setError(e?.message||'Report sharing is not supported here. Use Preview / Print / Save PDF, then share the saved PDF from your Downloads folder.');
+  }
+ };
  const publishable=activeExam?.status!=='Published';
  return <section className="workspace"><div className="section-head"><div><button className="back" onClick={onBack}>← Dashboard</button><h2>🏆 Results & Report Cards</h2><p>{schoolName||'School'} · Exam management, marks entry and student results</p></div><button style={soft} onClick={load}>↻ Refresh</button></div>
   {error&&<div className="pending" style={{color:'#991b1b',background:'#fee2e2'}}>{error}</div>}{notice&&<div className="pending" style={{color:'#166534',background:'#dcfce7'}}>{notice}</div>}
