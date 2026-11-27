@@ -111,7 +111,21 @@ export default function ResultsReportCardsModule({schoolId,schoolName,profile,st
   <div class="remarks no-break"><h3>TEACHER'S REMARKS & CONDUCT / CO-CURRICULAR REMARKS</h3><div class="remark-grid"><div><b>Teacher's Remarks :</b><div class="remark-box">${esc(p.teacherRemarks||'')}</div></div><div><b>Conduct / Co-curricular :</b><div class="remark-box">${esc(p.conductRemarks||'')}</div></div></div></div>
   <div class="signatures no-break"><div class="sig">CLASS TEACHER</div><div class="sig">PARENT'S SIGNATURE</div><div class="sig">PRINCIPAL</div></div></div></body></html>`;
  };
- const printFullCard=student=>{const w=window.open('','_blank');if(!w){setError('Allow pop-ups to preview or print the report card.');return;}w.document.write(reportCardHtml(student));w.document.close();};
+ const printFullCard=student=>{
+    const html=reportCardHtml(student);
+    const blob=new Blob([html],{type:'text/html;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const w=window.open(url,'_blank');
+    if(!w){
+      URL.revokeObjectURL(url);
+      setError('Allow pop-ups to preview or print the report card.');
+      return;
+    }
+    w.addEventListener('load',()=>{
+      try{w.document.title=`${student.name||'Student'} Progress Report`;}catch{}
+      window.setTimeout(()=>URL.revokeObjectURL(url),60000);
+    },{once:true});
+  };
  const copyFullCard=async student=>{const {byExam}=getStudentReport(student);const lines=[`IQRA PUBLIC SCHOOL - ${student.name}`,`Class: ${student.className}`,`Admission No: ${student.admissionNo||'—'}`];examsForSession.forEach(ex=>{const list=byExam[ex.id]||[];const got=list.reduce((a,x)=>a+(!x.absent?Number(x.obtained||0):0),0);const max=list.reduce((a,x)=>a+Number(x.maximum||0),0);lines.push(`${ex.name}: ${got}/${max}`);});try{await navigator.clipboard.writeText(lines.join('\n'));setNotice('Report summary copied.');}catch{setError('Copy is not supported in this browser.');}};
  const shareFullCard=async student=>{
     const html=reportCardHtml(student);
