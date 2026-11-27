@@ -2,6 +2,7 @@ import React,{useEffect,useMemo,useState} from 'react';
 import {addDoc,collection,deleteDoc,doc,onSnapshot,query,serverTimestamp,updateDoc,where} from 'firebase/firestore';
 import {getDownloadURL,ref,uploadBytes} from 'firebase/storage';
 import {auth,db,storage} from './firebase';
+import {getClassOptionsWithLegacy} from './classSystem';
 
 const field={width:'100%',padding:10,border:'1px solid #cbd5e1',borderRadius:9,boxSizing:'border-box',background:'#fff'};
 const btn={padding:'10px 14px',border:0,borderRadius:9,background:'#2457d6',color:'#fff',fontWeight:700,cursor:'pointer'};
@@ -18,7 +19,7 @@ export default function HomeworkModule({schoolId,schoolName,profile,students=[],
  const myTeacher=teachers.find(t=>t.id===profile?.teacherId)||profile||{};
  const teacherClasses=useMemo(()=>split(myTeacher.classes),[myTeacher.classes]);
  const teacherSubjects=useMemo(()=>split(myTeacher.subjects),[myTeacher.subjects]);
- const classNames=useMemo(()=>[...new Set(students.map(s=>s.className).filter(Boolean))].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),[students]);
+ const classOptions=useMemo(()=>getClassOptionsWithLegacy([...students.map(s=>s.className),...teacherClasses]),[students,teacherClasses]);
  const subjects=useMemo(()=>{const rows=schoolSubjects.filter(x=>x.className===form.className&&(x.status||'Active')==='Active'&&(!activeSession||x.sessionId===activeSession.id||x.sessionName===activeSession.name));const names=[...new Set(rows.map(x=>String(x.subjectName||'').trim()).filter(Boolean))];return isTeacher&&teacherSubjects.length?names.filter(n=>teacherSubjects.includes(n)):names;},[schoolSubjects,form.className,activeSession,isTeacher,teacherSubjects]);
  useEffect(()=>{if(!schoolId){setSchoolSubjects([]);setActiveSession(null);return;}
   if(isTeacher&&!teacherClasses.length){setSchoolSubjects([]);return;}
@@ -123,7 +124,7 @@ export default function HomeworkModule({schoolId,schoolName,profile,students=[],
    <h3>{editing?'Edit Homework':'Create New Homework'}</h3>
    <label>Homework Title<input required style={field} value={form.title} onChange={e=>setForm(v=>({...v,title:e.target.value}))} placeholder="e.g. Chapter 3 – Exercise"/></label>
    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:10}}>
-    <label>Class<select required style={field} value={form.className} onChange={e=>setForm(v=>({...v,className:e.target.value,subject:''}))}><option value="">Select Class</option>{(isTeacher&&teacherClasses.length?teacherClasses:classNames).map(c=><option key={c}>{c}</option>)}</select></label>
+    <label>Class<select required style={field} value={form.className} onChange={e=>setForm(v=>({...v,className:e.target.value,subject:''}))}><option value="">Select Class</option>{classOptions.map(c=><option key={c.value} value={c.value} disabled={isTeacher&&teacherClasses.length>0&&!teacherClasses.includes(c.value)}>{c.label}</option>)}</select></label>
     <label>Section<select style={field} value={form.section} onChange={e=>setForm(v=>({...v,section:e.target.value}))}><option>All Sections</option>{[...new Set(students.filter(s=>s.className===form.className).map(s=>s.section).filter(Boolean))].map(s=><option key={s}>{s}</option>)}</select></label>
     <label>Subject<select required style={field} value={form.subject} onChange={e=>setForm(v=>({...v,subject:e.target.value}))}><option value="">Select Subject</option>{subjects.map(s=><option key={s}>{s}</option>)}</select></label>
     <label>Assigned Date<input required type="date" style={field} value={form.assignedDate} onChange={e=>setForm(v=>({...v,assignedDate:e.target.value}))}/></label>
