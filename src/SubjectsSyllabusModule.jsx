@@ -5,7 +5,7 @@ import {
   updateDoc, where
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { getClassLabel, getClassOptionsWithLegacy } from './classSystem';
+import { CLASS_OPTIONS, getClassLabel, getClassOptionsWithLegacy } from './classSystem';
 
 const box={background:'#fff',border:'1px solid #e2e8f0',borderRadius:12,padding:16,marginBottom:14};
 const field={width:'100%',padding:10,border:'1px solid #cbd5e1',borderRadius:8,boxSizing:'border-box',fontSize:14,background:'#fff'};
@@ -63,7 +63,7 @@ export default function SubjectsSyllabusModule({schoolId,schoolName,profile,isTe
  const currentSession=sessions.find(s=>s.id===sessionId);
  const activeClasses=useMemo(()=>{
   const sessionClasses=classes.filter(c=>(!sessionId||isTeacher||c.sessionId===sessionId));
-  const sourceValues=isTeacher?assignedClasses:sessionClasses.map(c=>c.className);
+  const sourceValues=isTeacher?assignedClasses:[...CLASS_OPTIONS.map(item=>item.value),...sessionClasses.map(c=>c.className)];
   return getClassOptionsWithLegacy(sourceValues).map((item,index)=>({id:`common-${index}`,className:item.value,label:item.label,status:'Active'}));
  },[classes,sessionId,isTeacher,assignedClasses]);
  const visibleSubjects=useMemo(()=>subjects.filter(s=>s.sessionId===sessionId&&s.className===className&&(s.status||'Active')!=='Disabled').filter(s=>!isTeacher||((s.teacherIds||[]).includes(profile?.teacherId)||assignedSubjects.includes(s.subjectName))),[subjects,sessionId,className,isTeacher,assignedSubjects,profile?.teacherId]);
