@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useState} from 'react';
 import {addDoc,collection,deleteDoc,doc,onSnapshot,query,serverTimestamp,updateDoc,where} from 'firebase/firestore';
 import {getDownloadURL,ref,uploadBytes} from 'firebase/storage';
 import {auth,db,storage} from './firebase';
-import {getClassOptionsWithLegacy} from './classSystem';
+import {CLASS_LIST,getClassOptionsWithLegacy} from './classSystem';
 
 const field={width:'100%',padding:10,border:'1px solid #cbd5e1',borderRadius:9,boxSizing:'border-box',background:'#fff'};
 const btn={padding:'10px 14px',border:0,borderRadius:9,background:'#2457d6',color:'#fff',fontWeight:700,cursor:'pointer'};
@@ -19,7 +19,10 @@ export default function HomeworkModule({schoolId,schoolName,profile,students=[],
  const myTeacher=teachers.find(t=>t.id===profile?.teacherId)||profile||{};
  const teacherClasses=useMemo(()=>split(myTeacher.classes),[myTeacher.classes]);
  const teacherSubjects=useMemo(()=>split(myTeacher.subjects),[myTeacher.subjects]);
- const classOptions=useMemo(()=>getClassOptionsWithLegacy([...students.map(s=>s.className),...teacherClasses]),[students,teacherClasses]);
+ const classOptions=useMemo(()=>{
+  const all=getClassOptionsWithLegacy([...CLASS_LIST,...students.map(s=>s.className),...teacherClasses]);
+  return isTeacher?all.filter(option=>teacherClasses.includes(option.value)):all;
+ },[students,teacherClasses,isTeacher]);
  const subjects=useMemo(()=>{const rows=schoolSubjects.filter(x=>x.className===form.className&&(x.status||'Active')==='Active'&&(!activeSession||x.sessionId===activeSession.id||x.sessionName===activeSession.name));const names=[...new Set(rows.map(x=>String(x.subjectName||'').trim()).filter(Boolean))];return isTeacher&&teacherSubjects.length?names.filter(n=>teacherSubjects.includes(n)):names;},[schoolSubjects,form.className,activeSession,isTeacher,teacherSubjects]);
  useEffect(()=>{if(!schoolId){setSchoolSubjects([]);setActiveSession(null);return;}
   if(isTeacher&&!teacherClasses.length){setSchoolSubjects([]);return;}
